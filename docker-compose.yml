@@ -1,0 +1,15 @@
+services:
+  rail-docs:
+    build: .
+    container_name: rail-docs
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      ADMIN_PASSWORD: change-this-to-a-long-password
+      PORT: 3000
+      DB_PATH: /app/data/smi_tc.db
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads

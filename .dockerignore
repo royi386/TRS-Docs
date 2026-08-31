@@ -1,0 +1,6 @@
+node_modules
+npm-debug.log
+smi_tc.db
+/data
+.git
+.gitignore

@@ -1,0 +1,10 @@
+{
+  "name": "Rail Docs - RDSO Library",
+  "short_name": "Rail Docs",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f3ed",
+  "theme_color": "#102a43",
+  "description": "Search Indian Railways RDSO engineering documents",
+  "icons": []
+}
