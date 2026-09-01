@@ -16,14 +16,45 @@
     <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form></section>
   </main>
   <footer>RDSO document library <span>•</span> Built for railway engineers</footer>
-  <script>
+<script>
     const tokenKey = 'railDocsAdminToken';
     const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
-  const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+  const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&', '<': '<', '>': '>', "'": ''', '"': '"' }[character]));
   const formatSize = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   function showPage(page) { document.querySelectorAll('.page').forEach(item => item.classList.toggle('active', item.id === `${page}Page`)); document.querySelectorAll('.nav-link').forEach(item => item.classList.toggle('active', item.dataset.page === page)); }
   window.addEventListener('hashchange', () => showPage(location.hash === '#upload' ? 'upload' : 'search')); showPage(location.hash === '#upload' ? 'upload' : 'search');
-  document.getElementById('searchForm').addEventListener('submit', async event => { event.preventDefault(); const query = document.getElementById('searchInput').value.trim(); const docType = document.getElementById('docType').value; const status = document.getElementById('searchStatus'); const results = document.getElementById('results'); status.textContent = 'Searching the library...'; results.innerHTML = ''; try { const params = new URLSearchParams({ q: query }); if (docType) params.append('type', docType); const response = await api(`/api/search?${params.toString()}`); const documents = await response.json(); status.textContent = documents.length ? `${documents.length} document${documents.length === 1 ? '' : 's'} found` : 'No matching documents. Try a document number or a shorter phrase.'; results.innerHTML = documents.map(doc => `<article class="result"><div><span class="doc-number">${escapeHtml(doc.document_number || 'Unnumbered')}</span><h2>${escapeHtml(doc.caption)}</h2><p>${escapeHtml(doc.original_name)} <span>•</span> ${formatSize(doc.file_size || 0)}</p></div><a class="download" href="/api/download/${doc.id}">Download</a></article>`).join(''); } catch (error) { status.textContent = 'Search is temporarily unavailable.'; } });
+
+  function performSearch(query, docType) {
+    const status = document.getElementById('searchStatus');
+    const results = document.getElementById('results');
+    if (!query) {
+      status.textContent = 'Start with a document number or a few words from its caption.';
+      results.innerHTML = '';
+      return;
+    }
+    status.textContent = 'Searching the library...';
+    results.innerHTML = '';
+    const params = new URLSearchParams({ q: query });
+    if (docType) params.append('type', docType);
+    api(`/api/search?${params.toString()}`)
+      .then(r => r.json())
+      .then(documents => {
+        status.textContent = documents.length ? `${documents.length} document${documents.length === 1 ? '' : 's'} found` : 'No matching documents. Try a document number or a shorter phrase.';
+        results.innerHTML = documents.map(doc => `<article class="result"><div><span class="doc-number">${escapeHtml(doc.document_number || 'Unnumbered')}</span><h2>${escapeHtml(doc.caption)}</h2><p>${escapeHtml(doc.original_name)} <span>•</span> ${formatSize(doc.file_size || 0)}</p></div><a class="download" href="/api/download/${doc.id}">Download</a></article>`).join('');
+      })
+      .catch(() => { status.textContent = 'Search is temporarily unavailable.'; });
+  }
+
+  let searchDebounce;
+  const searchInput = document.getElementById('searchInput');
+  const docTypeSelect = document.getElementById('docType');
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => performSearch(searchInput.value.trim(), docTypeSelect.value), 250);
+  });
+  docTypeSelect.addEventListener('change', () => performSearch(searchInput.value.trim(), docTypeSelect.value));
+  document.getElementById('searchForm').addEventListener('submit', event => { event.preventDefault(); performSearch(searchInput.value.trim(), docTypeSelect.value); });
+
   const loginForm = document.getElementById('loginForm'); const uploadForm = document.getElementById('uploadForm'); const loginStatus = document.getElementById('loginStatus');
   function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); }
   setAdminState(Boolean(localStorage.getItem(tokenKey)));
