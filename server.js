@@ -109,22 +109,38 @@ app.post('/api/admin/logout', (req, res) => {
 
 // Search documents
 app.get('/api/search', (req, res) => {
-  const { q } = req.query;
+  const { q, type } = req.query;
   
   if (!q || q.trim() === '') {
     return res.json([]);
   }
   
   const searchTerm = `%${q.trim()}%`;
-  const stmt = db.prepare(`
-    SELECT id, filename, original_name, document_number, caption, upload_date, file_size
-    FROM documents
-    WHERE document_number LIKE ? OR caption LIKE ? OR original_name LIKE ?
-    ORDER BY upload_date DESC
-    LIMIT 50
-  `);
+  let stmt;
+  let params;
   
-  const results = stmt.all(searchTerm, searchTerm, searchTerm);
+  if (type && ['SMI', 'MS', 'TC', 'Drawings'].includes(type)) {
+    stmt = db.prepare(`
+      SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+      FROM documents
+      WHERE (document_number LIKE ? OR caption LIKE ? OR original_name LIKE ?)
+      AND document_number LIKE ?
+      ORDER BY upload_date DESC
+      LIMIT 50
+    `);
+    params = [searchTerm, searchTerm, searchTerm, `${type}%`];
+  } else {
+    stmt = db.prepare(`
+      SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+      FROM documents
+      WHERE document_number LIKE ? OR caption LIKE ? OR original_name LIKE ?
+      ORDER BY upload_date DESC
+      LIMIT 50
+    `);
+    params = [searchTerm, searchTerm, searchTerm];
+  }
+  
+  const results = stmt.all(...params);
   res.json(results);
 });
 
