@@ -1,15 +1,15 @@
 services:
   rail-docs:
-    image: ghcr.io/royi386/trs-docs:latest
+    build: .
     container_name: rail-docs
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      ADMIN_PASSWORD: change-this-to-a-long-password
+      ADMIN_PASSWORD: ctAElsEd#1998
       PORT: 3000
       DB_PATH: /app/data/smi_tc.db
       UPLOAD_DIR: /app/uploads
     volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
+      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/data:/app/data
+      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/uploads:/app/uploads
