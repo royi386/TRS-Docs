@@ -1,6 +1,6 @@
 services:
   rail-docs:
-    image: ghcr.io/royi386/smi-ms-tc:latest
+    image: ghcr.io/royi386/trs-docs:latest
     container_name: rail-docs
     restart: unless-stopped
     ports:
