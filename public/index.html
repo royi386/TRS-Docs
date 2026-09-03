@@ -19,10 +19,11 @@
 <script>
     const tokenKey = 'railDocsAdminToken';
     const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
-  const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&', '<': '<', '>': '>', "'": ''', '"': '"' }[character]));
+  const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
   const formatSize = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   function showPage(page) { document.querySelectorAll('.page').forEach(item => item.classList.toggle('active', item.id === `${page}Page`)); document.querySelectorAll('.nav-link').forEach(item => item.classList.toggle('active', item.dataset.page === page)); }
-  window.addEventListener('hashchange', () => showPage(location.hash === '#upload' ? 'upload' : 'search')); showPage(location.hash === '#upload' ? 'upload' : 'search');
+  function updatePageFromHash() { showPage(location.hash === '#upload' ? 'upload' : 'search'); setAdminState(Boolean(localStorage.getItem(tokenKey))); }
+  window.addEventListener('hashchange', updatePageFromHash);
 
   function performSearch(query, docType) {
     const status = document.getElementById('searchStatus');
@@ -57,7 +58,7 @@
 
   const loginForm = document.getElementById('loginForm'); const uploadForm = document.getElementById('uploadForm'); const loginStatus = document.getElementById('loginStatus');
   function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); }
-  setAdminState(Boolean(localStorage.getItem(tokenKey)));
+  updatePageFromHash();
   loginForm.addEventListener('submit', async event => { event.preventDefault(); loginStatus.textContent = 'Signing in...'; const response = await api('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('password').value }) }); const data = await response.json(); if (!response.ok) { loginStatus.textContent = data.error || 'Login failed'; return; } localStorage.setItem(tokenKey, data.token); setAdminState(true); });
   uploadForm.addEventListener('submit', async event => { event.preventDefault(); const status = document.getElementById('uploadStatus'); status.textContent = 'Uploading...'; const response = await api('/api/upload', { method: 'POST', body: new FormData(uploadForm) }); const data = await response.json(); status.textContent = response.ok ? 'Document uploaded successfully.' : (data.error || 'Upload failed'); if (response.ok) uploadForm.reset(); });
   document.getElementById('logoutButton').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); localStorage.removeItem(tokenKey); setAdminState(false); });

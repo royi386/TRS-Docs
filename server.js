@@ -246,7 +246,23 @@ app.delete('/api/documents/:id', requireAdmin, (req, res) => {
 });
 
 // Serve the main app for all other routes (SPA support)
+// Check for admin authentication if the route contains 'admin' or 'upload'
 app.get('*', (req, res) => {
+  const pathName = req.path || '';
+  const isAdminRoute = pathName.includes('admin') || pathName.includes('upload') || pathName === '';
+  
+  if (isAdminRoute && !ADMIN_PASSWORD) {
+    return res.status(503).json({ error: 'Admin access is not configured on the server' });
+  }
+  
+  if (isAdminRoute) {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token || !adminTokens.has(token)) {
+      // Return 401 with JSON error so frontend can show login form
+      return res.status(401).json({ error: 'Admin login required' });
+    }
+  }
+  
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
