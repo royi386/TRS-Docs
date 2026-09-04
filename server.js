@@ -44,6 +44,23 @@ try {
   if (!error.message.includes('duplicate column name')) throw error;
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_document_number ON documents(document_number)');
+try {
+  db.exec('ALTER TABLE documents ADD COLUMN document_type TEXT NOT NULL DEFAULT \'\'');
+} catch (error) {
+  if (!error.message.includes('duplicate column name')) throw error;
+}
+db.exec(`
+  UPDATE documents
+  SET document_type = CASE
+    WHEN document_number LIKE 'SMI%' THEN 'SMI'
+    WHEN document_number LIKE 'MS%' THEN 'MS'
+    WHEN document_number LIKE 'TC%' THEN 'TC'
+    WHEN document_number LIKE 'Drawings%' THEN 'Drawings'
+    ELSE document_type
+  END
+  WHERE document_type = ''
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_document_type ON documents(document_type)');
 
 function isAdmin(req) {
   const token = req.headers.authorization?.replace('Bearer ', '');
@@ -107,40 +124,70 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// Search documents
+function normalizeSearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function editDistance(left, right) {
+  const distances = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let leftIndex = 0; leftIndex <= left.length; leftIndex += 1) distances[leftIndex][0] = leftIndex;
+  for (let rightIndex = 0; rightIndex <= right.length; rightIndex += 1) distances[0][rightIndex] = rightIndex;
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      distances[leftIndex][rightIndex] = Math.min(
+        distances[leftIndex][rightIndex - 1] + 1,
+        distances[leftIndex - 1][rightIndex] + 1,
+        distances[leftIndex - 1][rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+      if (leftIndex > 1 && rightIndex > 1 && left[leftIndex - 1] === right[rightIndex - 2] && left[leftIndex - 2] === right[rightIndex - 1]) {
+        distances[leftIndex][rightIndex] = Math.min(distances[leftIndex][rightIndex], distances[leftIndex - 2][rightIndex - 2] + 1);
+      }
+    }
+  }
+  return distances[left.length][right.length];
+}
+
+function searchTermMatches(term, text, textTokens) {
+  if (text.includes(term)) return true;
+  if (term.length < 3) return false;
+  const maxDistance = term.length <= 4 ? 1 : term.length <= 8 ? 2 : 3;
+  return textTokens.some(token => {
+    const distance = editDistance(term, token);
+    return distance <= maxDistance && distance / Math.max(term.length, token.length) <= 0.34;
+  });
+}
+
+// Search each word independently so word order and small typing mistakes do not prevent matches.
 app.get('/api/search', (req, res) => {
-  const { q, type } = req.query;
-  
-  if (!q || q.trim() === '') {
-    return res.json([]);
-  }
-  
-  const searchTerm = `%${q.trim()}%`;
-  let stmt;
-  let params;
-  
-  if (type && ['SMI', 'MS', 'TC', 'Drawings'].includes(type)) {
-    stmt = db.prepare(`
-      SELECT id, filename, original_name, document_number, caption, upload_date, file_size
-      FROM documents
-      WHERE (document_number LIKE ? OR caption LIKE ? OR original_name LIKE ?)
-      AND document_number LIKE ?
-      ORDER BY upload_date DESC
-      LIMIT 50
-    `);
-    params = [searchTerm, searchTerm, searchTerm, `${type}%`];
-  } else {
-    stmt = db.prepare(`
-      SELECT id, filename, original_name, document_number, caption, upload_date, file_size
-      FROM documents
-      WHERE document_number LIKE ? OR caption LIKE ? OR original_name LIKE ?
-      ORDER BY upload_date DESC
-      LIMIT 50
-    `);
-    params = [searchTerm, searchTerm, searchTerm];
-  }
-  
-  const results = stmt.all(...params);
+  const queryTerms = normalizeSearchText(req.query.q).split(' ').filter(Boolean);
+  if (!queryTerms.length) return res.json([]);
+
+  const type = ['SMI', 'MS', 'TC', 'Drawings'].includes(req.query.type) ? req.query.type : '';
+  const stmt = type
+    ? db.prepare(`
+        SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+        FROM documents
+        WHERE document_type = ? OR (document_type = '' AND document_number LIKE ?)
+      `)
+    : db.prepare(`
+        SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+        FROM documents
+      `);
+  const documents = type ? stmt.all(type, `${type}%`) : stmt.all();
+
+  const results = documents
+    .map(document => {
+      const text = normalizeSearchText(`${document.document_number} ${document.caption} ${document.original_name}`);
+      const textTokens = text.split(' ').filter(Boolean);
+      const matches = queryTerms.every(term => searchTermMatches(term, text, textTokens));
+      const exactMatches = queryTerms.filter(term => text.includes(term)).length;
+      return matches ? { document, exactMatches } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.exactMatches - left.exactMatches || String(right.document.upload_date).localeCompare(String(left.document.upload_date)))
+    .slice(0, 50)
+    .map(result => result.document);
+
   res.json(results);
 });
 
@@ -163,6 +210,7 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     }
     
     const { caption, documentNumber } = req.body;
+    const documentType = ['SMI', 'MS', 'TC', 'Drawings'].includes(req.body.documentType) ? req.body.documentType : '';
     if (!documentNumber || documentNumber.trim() === '') {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Document number is required' });
@@ -174,14 +222,15 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     }
     
     const stmt = db.prepare(`
-      INSERT INTO documents (filename, original_name, document_number, caption, file_size, mime_type)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO documents (filename, original_name, document_number, document_type, caption, file_size, mime_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     
     const result = stmt.run(
       req.file.filename,
       req.file.originalname,
       documentNumber.trim(),
+      documentType,
       caption.trim(),
       req.file.size,
       req.file.mimetype
@@ -200,6 +249,21 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     }
     res.status(500).json({ error: error.message });
   }
+});
+
+// View document inline in the browser
+app.get('/api/view/:id', (req, res) => {
+  const stmt = db.prepare('SELECT filename, original_name FROM documents WHERE id = ?');
+  const doc = stmt.get(req.params.id);
+
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+  const filePath = path.join(uploadDirectory, doc.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on server' });
+
+  res.type('application/pdf');
+  res.set('Content-Disposition', 'inline');
+  res.sendFile(filePath);
 });
 
 // Download document
