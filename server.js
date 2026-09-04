@@ -11,8 +11,10 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const adminTokens = new Set();
 const uploadDirectory = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+const feedbackUploadDirectory = process.env.FEEDBACK_UPLOAD_DIR || path.join(__dirname, 'feedback-uploads');
 const databasePath = process.env.DB_PATH || path.join(__dirname, 'smi_tc.db');
 fs.mkdirSync(uploadDirectory, { recursive: true });
+fs.mkdirSync(feedbackUploadDirectory, { recursive: true });
 
 // Middleware
 app.use(cors());
@@ -61,6 +63,20 @@ db.exec(`
   WHERE document_type = ''
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_document_type ON documents(document_type)');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS feedback_submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_name TEXT NOT NULL DEFAULT '',
+    sender_contact TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    filename TEXT NOT NULL DEFAULT '',
+    original_name TEXT NOT NULL DEFAULT '',
+    file_size INTEGER,
+    mime_type TEXT,
+    submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_feedback_submitted_at ON feedback_submissions(submitted_at);
+`);
 
 function isAdmin(req) {
   const token = req.headers.authorization?.replace('Bearer ', '');
@@ -99,6 +115,17 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
+const feedbackUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, feedbackUploadDirectory),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, 'feedback-' + uniqueSuffix + path.extname(file.originalname));
+    }
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
 // Routes
 
 // Health check
@@ -122,6 +149,34 @@ app.post('/api/admin/logout', (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (token) adminTokens.delete(token);
   res.json({ success: true });
+});
+
+app.post('/api/feedback', feedbackUpload.single('attachment'), (req, res) => {
+  const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+  if (!message) {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO feedback_submissions (sender_name, sender_contact, message, filename, original_name, file_size, mime_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      typeof req.body.senderName === 'string' ? req.body.senderName.trim() : '',
+      typeof req.body.senderContact === 'string' ? req.body.senderContact.trim() : '',
+      message,
+      req.file?.filename || '',
+      req.file?.originalname || '',
+      req.file?.size || null,
+      req.file?.mimetype || ''
+    );
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (error) {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    console.error('Feedback error:', error);
+    res.status(500).json({ error: 'Unable to save feedback' });
+  }
 });
 
 function normalizeSearchText(value) {
@@ -200,6 +255,28 @@ app.get('/api/documents', requireAdmin, (req, res) => {
   `);
   const results = stmt.all();
   res.json(results);
+});
+
+app.get('/api/feedback', requireAdmin, (req, res) => {
+  const submissions = db.prepare(`
+    SELECT id, sender_name, sender_contact, message, original_name, file_size, mime_type, submitted_at,
+      CASE WHEN filename = '' THEN 0 ELSE 1 END AS has_file
+    FROM feedback_submissions
+    ORDER BY submitted_at DESC
+  `).all();
+  res.json(submissions);
+});
+
+app.delete('/api/feedback/:id', requireAdmin, (req, res) => {
+  const submission = db.prepare('SELECT filename FROM feedback_submissions WHERE id = ?').get(req.params.id);
+  if (!submission) return res.status(404).json({ error: 'Feedback not found' });
+
+  if (submission.filename) {
+    const filePath = path.join(feedbackUploadDirectory, submission.filename);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+  db.prepare('DELETE FROM feedback_submissions WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
 });
 
 // Upload document
@@ -284,6 +361,15 @@ app.get('/api/download/:id', (req, res) => {
   }
   
   res.download(filePath, doc.original_name);
+});
+
+app.get('/api/feedback/:id/download', requireAdmin, (req, res) => {
+  const submission = db.prepare('SELECT filename, original_name FROM feedback_submissions WHERE id = ?').get(req.params.id);
+  if (!submission || !submission.filename) return res.status(404).json({ error: 'Feedback file not found' });
+
+  const filePath = path.join(feedbackUploadDirectory, submission.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Feedback file not found on server' });
+  res.download(filePath, submission.original_name);
 });
 
 // Delete document (optional admin feature)

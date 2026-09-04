@@ -1,10 +1,25 @@
 {
   "name": "Rail Docs - RDSO Library",
   "short_name": "Rail Docs",
-  "start_url": "/",
+  "start_url": "/#search",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#f6f3ed",
   "theme_color": "#102a43",
   "description": "Search Indian Railways RDSO engineering documents",
-  "icons": []
+  "icons": [
+    {
+      "src": "icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

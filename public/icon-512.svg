@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#102a43"/>
+  <rect x="76" y="76" width="360" height="360" fill="#e85d04"/>
+  <text x="256" y="310" fill="#fffdf8" font-family="Arial,sans-serif" font-size="154" font-weight="700" text-anchor="middle">IR</text>
+</svg>

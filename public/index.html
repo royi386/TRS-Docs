@@ -6,21 +6,24 @@
   <meta name="theme-color" content="#102a43">
   <meta name="description" content="Search Indian Railways RDSO engineering documents">
   <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.svg" type="image/svg+xml">
   <title>Rail Docs | RDSO Library</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-  <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">IR</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Search</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
+  <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">IR</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Search</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
-    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO SMI, MS and TC documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select"><option value="">All Types</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
+    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO SMI, MS, TC and Drawings documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select"><option value="">All Types</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
     <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType"><option value="">-- Select type --</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form></section>
 
     <section class="page" id="libraryPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Library</h1><p class="intro">All documents in the library.</p><div id="libraryList"></div></section>
+    <section class="page" id="feedbackPage"><div id="publicFeedback"><div class="eyebrow">Contact the library</div><h1>Send feedback</h1><p class="intro">Send a message or a file for the library team to review.</p><form id="feedbackForm" class="panel"><label>Your name<input name="senderName" autocomplete="name" required></label><label>Message<textarea name="message" rows="6" required placeholder="Write your message"></textarea></label><label class="file-drop">Optional file<input name="attachment" type="file"></label><button class="button button-primary" type="submit">Send message</button><p id="feedbackStatus" class="status" aria-live="polite"></p></form></div><div id="feedbackInbox" class="hidden"><div class="eyebrow">Admin inbox</div><h1>User feedback</h1><p class="intro">Messages and files submitted by users.</p><div id="feedbackList" class="feedback-list"></div></div></section>
 
   </main>
-  <footer>RDSO document library <span>•</span> Built for railway engineers</footer>
+  <footer>Built for Indian Railway Engineers • By Electric Loco Shed, Erode</footer>
 <script>
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
     const tokenKey = 'railDocsAdminToken';
     const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
@@ -30,6 +33,7 @@
     const hash = location.hash;
     let page = 'search';
     if (hash === '#upload') page = 'upload';
+    else if (hash === '#feedback' || hash === '#feedback-admin') page = 'feedback';
     else if (hash === '#library') {
          if (localStorage.getItem(tokenKey)) {
              page = 'library';
@@ -40,13 +44,18 @@
      }
     showPage(page);
     setAdminState(Boolean(localStorage.getItem(tokenKey)));
-    if (hash === '#upload' && localStorage.getItem(tokenKey)) validateAdminSession();
+    if ((hash === '#upload' || hash === '#feedback-admin') && localStorage.getItem(tokenKey)) validateAdminSession();
     
   }
   window.addEventListener('hashchange', updatePageFromHash);
 
   function clearAdminSession(message) { localStorage.removeItem(tokenKey); setAdminState(false); if (message) loginStatus.textContent = message; }
   async function validateAdminSession() { const response = await api('/api/documents'); if (response.status === 401) clearAdminSession('Your admin session has expired. Please sign in again.'); }
+
+  const feedbackForm = document.getElementById('feedbackForm'); const feedbackStatus = document.getElementById('feedbackStatus'); const feedbackInbox = document.getElementById('feedbackInbox'); const publicFeedback = document.getElementById('publicFeedback');
+  function updateFeedbackView() { const isAdminInbox = location.hash === '#feedback-admin' && Boolean(localStorage.getItem(tokenKey)); publicFeedback.classList.toggle('hidden', isAdminInbox); feedbackInbox.classList.toggle('hidden', !isAdminInbox); if (isAdminInbox) loadFeedback(); }
+  async function downloadFeedbackFile(id, name) { try { const response = await api(`/api/feedback/${id}/download`); if (response.status === 401) { clearAdminSession('Your admin session has expired. Please sign in again.'); return; } if (!response.ok) { alert('Unable to download this file.'); return; } const url = URL.createObjectURL(await response.blob()); const link = document.createElement('a'); link.href = url; link.download = name; link.style.display = 'none'; document.body.appendChild(link); link.click(); window.setTimeout(() => { URL.revokeObjectURL(url); link.remove(); }, 1000); } catch (error) { console.error('Feedback download failed:', error); alert('Unable to download this file.'); } }
+  async function loadFeedback() { const response = await api('/api/feedback'); if (!response.ok) return; const submissions = await response.json(); const list = document.getElementById('feedbackList'); list.innerHTML = submissions.length ? submissions.map(item => `<article class="feedback-item" data-feedback-id="${item.id}"><div class="feedback-meta"><strong>${escapeHtml(item.sender_name || 'Anonymous')}</strong><time>${escapeHtml(item.submitted_at)}</time></div><p>${escapeHtml(item.message)}</p><div class="feedback-actions">${item.has_file ? `<button class="download feedback-download" type="button" data-id="${item.id}" data-name="${escapeHtml(item.original_name)}">Download ${escapeHtml(item.original_name)}</button>` : '<span class="feedback-no-file">No file attached</span>'}<button class="text-button feedback-delete" type="button" data-id="${item.id}">Delete</button></div></article>`).join('') : '<p class="status">No feedback received yet.</p>'; }
 
   function performSearch(query, docType) {
     const status = document.getElementById('searchStatus');
@@ -111,11 +120,22 @@
   document.getElementById('results').addEventListener('click', event => { const result = event.target.closest('.result'); if (result) openPdfViewer(result.dataset.documentId, result.dataset.documentName); });
   document.getElementById('results').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { const result = event.target.closest('.result'); if (result) { event.preventDefault(); openPdfViewer(result.dataset.documentId, result.dataset.documentName); } } });
   document.getElementById('closeViewer').addEventListener('click', closePdfViewer);
+  document.getElementById('feedbackList').addEventListener('click', async event => {
+    const downloadButton = event.target.closest('.feedback-download');
+    if (downloadButton) await downloadFeedbackFile(downloadButton.dataset.id, downloadButton.dataset.name);
+    const deleteButton = event.target.closest('.feedback-delete');
+    if (deleteButton && confirm('Delete this feedback message and its uploaded file?')) {
+      const response = await api(`/api/feedback/${deleteButton.dataset.id}`, { method: 'DELETE' });
+      if (response.ok) deleteButton.closest('.feedback-item').remove();
+      else alert('Unable to delete this feedback.');
+    }
+  });
 
   const loginForm = document.getElementById('loginForm'); const uploadForm = document.getElementById('uploadForm'); const loginStatus = document.getElementById('loginStatus');
-  function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); }
+  function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); updateFeedbackView(); }
   updatePageFromHash();
   loginForm.addEventListener('submit', async event => { event.preventDefault(); loginStatus.textContent = 'Signing in...'; const response = await api('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('password').value }) }); const data = await response.json(); if (!response.ok) { loginStatus.textContent = data.error || 'Login failed'; return; } localStorage.setItem(tokenKey, data.token); setAdminState(true); });
+  feedbackForm.addEventListener('submit', async event => { event.preventDefault(); feedbackStatus.textContent = 'Sending...'; const response = await fetch('/api/feedback', { method: 'POST', body: new FormData(feedbackForm) }); const data = await response.json(); feedbackStatus.textContent = response.ok ? 'Your message was sent.' : (data.error || 'Unable to send message.'); if (response.ok) feedbackForm.reset(); });
   uploadForm.addEventListener('submit', async event => {
     event.preventDefault();
     const status = document.getElementById('uploadStatus');
@@ -167,6 +187,15 @@ if (document.getElementById('uploadForm')) {
     uploadForm.insertBefore(libraryButton, uploadStatus);
     libraryButton.addEventListener('click', () => {
         location.hash = '#library';
+    });
+    const feedbackButton = document.createElement('button');
+    feedbackButton.id = 'feedbackButton';
+    feedbackButton.className = 'text-button';
+    feedbackButton.type = 'button';
+    feedbackButton.textContent = 'View user feedback';
+    uploadForm.insertBefore(feedbackButton, uploadStatus);
+    feedbackButton.addEventListener('click', () => {
+      location.hash = '#feedback-admin';
     });
 }
 function loadLibrary() {
