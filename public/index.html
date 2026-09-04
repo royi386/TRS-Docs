@@ -14,7 +14,7 @@
 <body>
   <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Search</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
-    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO SMI, MS, TC and Drawings documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select"><option value="">All Types</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
+    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO SMI, MS, TC and Drawings documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select"><option value="">All Types</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
     <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType"><option value="">-- Select type --</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form></section>
 
     <section class="page" id="libraryPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Library</h1><p class="intro">All documents in the library.</p><div id="libraryList"></div></section>
@@ -89,8 +89,9 @@
   document.getElementById('searchForm').addEventListener('submit', event => { event.preventDefault(); performSearch(searchInput.value.trim(), docTypeSelect.value); });
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  const searchPage = document.getElementById('searchPage'); const pdfViewer = document.getElementById('pdfViewer'); const viewerTitle = document.getElementById('viewerTitle'); const viewerDownload = document.getElementById('viewerDownload'); const pdfPages = document.getElementById('pdfPages');
+  const searchPage = document.getElementById('searchPage'); const pdfViewer = document.getElementById('pdfViewer'); const viewerTitle = document.getElementById('viewerTitle'); const viewerDownload = document.getElementById('viewerDownload'); const viewerShare = document.getElementById('viewerShare'); const pdfPages = document.getElementById('pdfPages');
   let pdfRenderRequest = 0;
+  let activePdf = { id: '', name: '' };
   async function renderPdf(id) {
     const requestId = ++pdfRenderRequest;
     pdfPages.innerHTML = '<p class="pdf-status">Loading document...</p>';
@@ -115,11 +116,39 @@
       console.error('PDF render failed:', error);
     }
   }
-  function openPdfViewer(id, name) { viewerTitle.textContent = name; viewerDownload.href = `/api/download/${id}`; pdfViewer.classList.remove('hidden'); searchPage.classList.add('viewer-open'); renderPdf(id); }
-  function closePdfViewer() { pdfRenderRequest += 1; pdfPages.innerHTML = ''; pdfViewer.classList.add('hidden'); searchPage.classList.remove('viewer-open'); }
+  function openPdfViewer(id, name) { activePdf = { id, name }; viewerTitle.textContent = name; viewerDownload.href = `/api/download/${id}`; pdfViewer.classList.remove('hidden'); searchPage.classList.add('viewer-open'); renderPdf(id); }
+  function closePdfViewer() { activePdf = { id: '', name: '' }; pdfRenderRequest += 1; pdfPages.innerHTML = ''; pdfViewer.classList.add('hidden'); searchPage.classList.remove('viewer-open'); }
+  async function sharePdf() {
+    if (!activePdf.id) return;
+    const pdfUrl = new URL(`/api/view/${activePdf.id}`, window.location.href).href;
+    const shareData = { title: activePdf.name || 'Rail Docs document', text: 'Rail Docs document', url: pdfUrl };
+    if (!navigator.share) {
+      viewerDownload.click();
+      alert('Native file sharing is unavailable here. The PDF was downloaded. Open it from Downloads to share it, or use Rail Docs over HTTPS to open the phone share options.');
+      return;
+    }
+    try {
+      const response = await fetch(pdfUrl);
+      if (response.ok) {
+        const file = new File([await response.blob()], activePdf.name || 'rail-docs-document.pdf', { type: 'application/pdf' });
+        if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: shareData.title, text: shareData.text });
+          return;
+        }
+      }
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+    }
+    try {
+      await navigator.share(shareData);
+    } catch (error) {
+      if (error.name !== 'AbortError') alert('Unable to open the phone share options.');
+    }
+  }
   document.getElementById('results').addEventListener('click', event => { const result = event.target.closest('.result'); if (result) openPdfViewer(result.dataset.documentId, result.dataset.documentName); });
   document.getElementById('results').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { const result = event.target.closest('.result'); if (result) { event.preventDefault(); openPdfViewer(result.dataset.documentId, result.dataset.documentName); } } });
   document.getElementById('closeViewer').addEventListener('click', closePdfViewer);
+  viewerShare.addEventListener('click', sharePdf);
   document.getElementById('feedbackList').addEventListener('click', async event => {
     const downloadButton = event.target.closest('.feedback-download');
     if (downloadButton) await downloadFeedbackFile(downloadButton.dataset.id, downloadButton.dataset.name);
