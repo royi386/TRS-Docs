@@ -10,6 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const adminTokens = new Set();
+const drawingTokens = new Map();
 const uploadDirectory = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const feedbackUploadDirectory = process.env.FEEDBACK_UPLOAD_DIR || path.join(__dirname, 'feedback-uploads');
 const databasePath = process.env.DB_PATH || path.join(__dirname, 'smi_tc.db');
@@ -73,11 +74,20 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS document_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    requires_login INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
-const addDocumentType = db.prepare('INSERT OR IGNORE INTO document_types (name) VALUES (?)');
-['SMI', 'MS', 'TC', 'Drawings'].forEach(name => addDocumentType.run(name));
+let addedDocumentTypeLoginColumn = false;
+try {
+  db.exec('ALTER TABLE document_types ADD COLUMN requires_login INTEGER NOT NULL DEFAULT 0');
+  addedDocumentTypeLoginColumn = true;
+} catch (error) {
+  if (!error.message.includes('duplicate column name')) throw error;
+}
+const addDocumentType = db.prepare('INSERT OR IGNORE INTO document_types (name, requires_login) VALUES (?, ?)');
+['SMI', 'MS', 'TC', 'Drawings'].forEach(name => addDocumentType.run(name, name === 'Drawings' ? 1 : 0));
+if (addedDocumentTypeLoginColumn) db.prepare("UPDATE document_types SET requires_login = 1 WHERE name = 'Drawings'").run();
 db.prepare(`
   INSERT OR IGNORE INTO document_types (name)
   SELECT DISTINCT TRIM(document_type) FROM documents WHERE TRIM(document_type) <> ''
@@ -96,10 +106,74 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_feedback_submitted_at ON feedback_submissions(submitted_at);
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS drawing_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL DEFAULT '',
+    designation TEXT NOT NULL DEFAULT '',
+    division TEXT NOT NULL DEFAULT '',
+    phone_number TEXT NOT NULL DEFAULT '',
+    account_status TEXT NOT NULL DEFAULT 'approved',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+[
+  ['full_name', "TEXT NOT NULL DEFAULT ''"],
+  ['designation', "TEXT NOT NULL DEFAULT ''"],
+  ['division', "TEXT NOT NULL DEFAULT ''"],
+  ['phone_number', "TEXT NOT NULL DEFAULT ''"],
+  ['account_status', "TEXT NOT NULL DEFAULT 'approved'"]
+].forEach(([column, definition]) => {
+  try {
+    db.exec(`ALTER TABLE drawing_users ADD COLUMN ${column} ${definition}`);
+  } catch (error) {
+    if (!error.message.includes('duplicate column name')) throw error;
+  }
+});
+
+function validateDrawingUser(username, password, passwordRequired = true) {
+  if (!username || username.length < 3 || username.length > 80) return 'Username must be between 3 and 80 characters';
+  if (passwordRequired && (!password || password.length < 8 || password.length > 200)) return 'Password must be between 8 and 200 characters';
+  return '';
+}
+
+function validateDrawingRegistration({ username, password, fullName, designation, division, phoneNumber }) {
+  const credentialError = validateDrawingUser(username, password);
+  if (credentialError) return credentialError;
+  if (!fullName || fullName.length > 120) return 'Name is required and must be 120 characters or fewer';
+  if (!designation || designation.length > 120) return 'Designation is required and must be 120 characters or fewer';
+  if (!division || division.length > 120) return 'Division is required and must be 120 characters or fewer';
+  if (!phoneNumber || phoneNumber.length < 6 || phoneNumber.length > 30) return 'Enter a valid phone number';
+  return '';
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, passwordHash) {
+  const [salt, savedHash] = String(passwordHash).split(':');
+  if (!salt || !savedHash) return false;
+  const suppliedHash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(savedHash, 'hex'));
+}
+
+function revokeDrawingTokens(userId) {
+  for (const [token, tokenUserId] of drawingTokens) if (tokenUserId === Number(userId)) drawingTokens.delete(token);
+}
 
 function isAdmin(req) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   return Boolean(token && adminTokens.has(token));
+}
+
+function isDrawingUser(req) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  return Boolean(token && drawingTokens.has(token));
 }
 
 function requireAdmin(req, res, next) {
@@ -170,18 +244,129 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/drawing-users', requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT id, username, full_name, designation, division, phone_number, account_status, created_at FROM drawing_users ORDER BY CASE account_status WHEN \'pending\' THEN 0 ELSE 1 END, username COLLATE NOCASE').all());
+});
+
+app.post('/api/drawing-users', requireAdmin, (req, res) => {
+  const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
+  const validationError = validateDrawingUser(username, password);
+  if (validationError) return res.status(400).json({ error: validationError });
+  try {
+    const result = db.prepare("INSERT INTO drawing_users (username, password_hash, account_status) VALUES (?, ?, 'approved')").run(username, hashPassword(password));
+    res.status(201).json({ id: result.lastInsertRowid, username });
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This username already exists' });
+    console.error('Create drawing user error:', error);
+    res.status(500).json({ error: 'Unable to create user' });
+  }
+});
+
+app.post('/api/drawings/register', (req, res) => {
+  const registration = {
+    username: typeof req.body.username === 'string' ? req.body.username.trim() : '',
+    password: typeof req.body.password === 'string' ? req.body.password : '',
+    fullName: typeof req.body.fullName === 'string' ? req.body.fullName.trim() : '',
+    designation: typeof req.body.designation === 'string' ? req.body.designation.trim() : '',
+    division: typeof req.body.division === 'string' ? req.body.division.trim() : '',
+    phoneNumber: typeof req.body.phoneNumber === 'string' ? req.body.phoneNumber.trim() : ''
+  };
+  const validationError = validateDrawingRegistration(registration);
+  if (validationError) return res.status(400).json({ error: validationError });
+  try {
+    db.prepare(`
+      INSERT INTO drawing_users (username, password_hash, full_name, designation, division, phone_number, account_status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending')
+    `).run(registration.username, hashPassword(registration.password), registration.fullName, registration.designation, registration.division, registration.phoneNumber);
+    res.status(201).json({ success: true, message: 'Your account request has been sent for approval' });
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This username is already registered' });
+    console.error('Register drawing user error:', error);
+    res.status(500).json({ error: 'Unable to submit account request' });
+  }
+});
+
+app.patch('/api/drawing-users/:id', requireAdmin, (req, res) => {
+  const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
+  const validationError = validateDrawingUser(username, password, Boolean(password));
+  if (validationError) return res.status(400).json({ error: validationError });
+  if (!db.prepare('SELECT id FROM drawing_users WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'User not found' });
+  try {
+    if (password) db.prepare('UPDATE drawing_users SET username = ?, password_hash = ? WHERE id = ?').run(username, hashPassword(password), req.params.id);
+    else db.prepare('UPDATE drawing_users SET username = ? WHERE id = ?').run(username, req.params.id);
+    revokeDrawingTokens(req.params.id);
+    res.json({ success: true, username });
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This username already exists' });
+    console.error('Update drawing user error:', error);
+    res.status(500).json({ error: 'Unable to update user' });
+  }
+});
+
+app.delete('/api/drawing-users/:id', requireAdmin, (req, res) => {
+  const result = db.prepare('DELETE FROM drawing_users WHERE id = ?').run(req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'User not found' });
+  revokeDrawingTokens(req.params.id);
+  res.json({ success: true });
+});
+
+app.patch('/api/drawing-users/:id/status', requireAdmin, (req, res) => {
+  const accountStatus = typeof req.body.accountStatus === 'string' ? req.body.accountStatus : '';
+  if (!['approved', 'declined', 'blocked'].includes(accountStatus)) return res.status(400).json({ error: 'Invalid account status' });
+  const result = db.prepare('UPDATE drawing_users SET account_status = ? WHERE id = ?').run(accountStatus, req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'User not found' });
+  revokeDrawingTokens(req.params.id);
+  res.json({ success: true, accountStatus });
+});
+
+app.post('/api/drawings/login', (req, res) => {
+  const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
+  const user = db.prepare('SELECT id, username, password_hash, account_status FROM drawing_users WHERE username = ?').get(username);
+  if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error: 'Invalid username or password' });
+  if (user.account_status === 'pending') return res.status(403).json({ error: 'Your account is waiting for admin approval' });
+  if (user.account_status === 'declined') return res.status(403).json({ error: 'Your account request was declined' });
+  if (user.account_status === 'blocked') return res.status(403).json({ error: 'Your account has been blocked' });
+  const token = crypto.randomBytes(32).toString('hex');
+  drawingTokens.set(token, user.id);
+  res.json({ token, username: user.username });
+});
+
+app.get('/api/drawings/session', (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  const userId = token && drawingTokens.get(token);
+  const user = userId && db.prepare('SELECT username, account_status FROM drawing_users WHERE id = ?').get(userId);
+  if (!user || user.account_status !== 'approved') {
+    if (token) drawingTokens.delete(token);
+    return res.status(401).json({ error: 'Drawing login required' });
+  }
+  res.json({ username: user.username });
+});
+
+app.post('/api/drawings/logout', (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) drawingTokens.delete(token);
+  res.json({ success: true });
+});
+
 app.get('/api/document-types', (req, res) => {
-  res.json(db.prepare('SELECT id, name FROM document_types ORDER BY name COLLATE NOCASE').all());
+  const query = isAdmin(req)
+    ? 'SELECT id, name, requires_login FROM document_types ORDER BY name COLLATE NOCASE'
+    : 'SELECT id, name, requires_login FROM document_types WHERE requires_login = 0 ORDER BY name COLLATE NOCASE';
+  res.json(db.prepare(query).all());
 });
 
 app.post('/api/document-types', requireAdmin, (req, res) => {
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const requiresLogin = req.body.requiresLogin ? 1 : 0;
   if (!name) return res.status(400).json({ error: 'Document type name is required' });
   if (name.length > 80) return res.status(400).json({ error: 'Document type name must be 80 characters or fewer' });
 
   try {
-    const result = db.prepare('INSERT INTO document_types (name) VALUES (?)').run(name);
-    res.status(201).json({ id: result.lastInsertRowid, name });
+    const result = db.prepare('INSERT INTO document_types (name, requires_login) VALUES (?, ?)').run(name, requiresLogin);
+    res.status(201).json({ id: result.lastInsertRowid, name, requiresLogin: Boolean(requiresLogin) });
   } catch (error) {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This document type already exists' });
     console.error('Create document type error:', error);
@@ -191,6 +376,7 @@ app.post('/api/document-types', requireAdmin, (req, res) => {
 
 app.patch('/api/document-types/:id', requireAdmin, (req, res) => {
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const requiresLogin = req.body.requiresLogin ? 1 : 0;
   if (!name) return res.status(400).json({ error: 'Document type name is required' });
   if (name.length > 80) return res.status(400).json({ error: 'Document type name must be 80 characters or fewer' });
 
@@ -199,10 +385,10 @@ app.patch('/api/document-types/:id', requireAdmin, (req, res) => {
 
   try {
     db.transaction(() => {
-      db.prepare('UPDATE document_types SET name = ? WHERE id = ?').run(name, documentType.id);
+      db.prepare('UPDATE document_types SET name = ?, requires_login = ? WHERE id = ?').run(name, requiresLogin, documentType.id);
       db.prepare('UPDATE documents SET document_type = ? WHERE document_type = ?').run(name, documentType.name);
     })();
-    res.json({ success: true, id: documentType.id, name });
+    res.json({ success: true, id: documentType.id, name, requiresLogin: Boolean(requiresLogin) });
   } catch (error) {
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This document type already exists' });
     console.error('Update document type error:', error);
@@ -288,16 +474,24 @@ app.get('/api/search', (req, res) => {
   if (!queryTerms.length) return res.json([]);
 
   const requestedType = typeof req.query.type === 'string' ? req.query.type.trim() : '';
-  const type = requestedType && db.prepare('SELECT 1 FROM document_types WHERE name = ?').get(requestedType) ? requestedType : '';
+  const typeRecord = requestedType && db.prepare('SELECT name, requires_login FROM document_types WHERE name = ?').get(requestedType);
+  if (typeRecord && typeRecord.requires_login && !isDrawingUser(req)) return res.status(401).json({ error: 'Login is required for this document type' });
+  const type = typeRecord ? typeRecord.name : '';
+  const canAccessProtectedTypes = isDrawingUser(req);
   const stmt = type
     ? db.prepare(`
         SELECT id, filename, original_name, document_number, document_type, keywords, caption, upload_date, file_size
         FROM documents
       WHERE document_type = ?
       `)
-    : db.prepare(`
+    : db.prepare(canAccessProtectedTypes ? `
         SELECT id, filename, original_name, document_number, document_type, keywords, caption, upload_date, file_size
         FROM documents
+      ` : `
+        SELECT d.id, d.filename, d.original_name, d.document_number, d.document_type, d.keywords, d.caption, d.upload_date, d.file_size
+        FROM documents d
+        LEFT JOIN document_types dt ON d.document_type = dt.name
+        WHERE COALESCE(dt.requires_login, 0) = 0
       `);
   const documents = type ? stmt.all(type) : stmt.all();
 
