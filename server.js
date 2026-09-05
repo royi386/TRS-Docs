@@ -460,6 +460,9 @@ function editDistance(left, right) {
 
 function searchTermMatches(term, text, textTokens) {
   if (text.includes(term)) return true;
+  // Document numbers must retain their exact digit order. Allow partial number matches
+  // (for example, 123 matches 1234), but never apply typo correction to numeric terms.
+  if (/\d/.test(term)) return false;
   if (term.length < 3) return false;
   const maxDistance = term.length <= 4 ? 1 : term.length <= 8 ? 2 : 3;
   return textTokens.some(token => {
