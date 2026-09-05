@@ -14,8 +14,8 @@
 <body>
   <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Search</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
-    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO SMI, MS, TC and Drawings documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select"><option value="">All Types</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
-    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType"><option value="">-- Select type --</option><option value="SMI">SMI</option><option value="MS">MS</option><option value="TC">TC</option><option value="Drawings">Drawings</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form></section>
+    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select" data-document-type-select="search"><option value="">All Types</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
+    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section></section>
 
     <section class="page" id="libraryPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Library</h1><p class="intro">All documents in the library.</p><div id="libraryList"></div></section>
     <section class="page" id="feedbackPage"><div id="publicFeedback"><div class="eyebrow">Contact the library</div><h1>Send feedback</h1><p class="intro">Send a message or a file for the library team to review.</p><form id="feedbackForm" class="panel"><label>Your name<input name="senderName" autocomplete="name" required></label><label>Message<textarea name="message" rows="6" required placeholder="Write your message"></textarea></label><label class="file-drop">Optional file<input name="attachment" type="file"></label><button class="button button-primary" type="submit">Send message</button><p id="feedbackStatus" class="status" aria-live="polite"></p></form></div><div id="feedbackInbox" class="hidden"><div class="eyebrow">Admin inbox</div><h1>User feedback</h1><p class="intro">Messages and files submitted by users.</p><div id="feedbackList" class="feedback-list"></div></div></section>
@@ -25,9 +25,31 @@
 <script>
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
     const tokenKey = 'railDocsAdminToken';
-    const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
+  const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
   const formatSize = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  let documentTypes = [];
+  const documentTypeOptions = (selected = '', includePlaceholder = true) => `${includePlaceholder ? '<option value="">-- Select type --</option>' : ''}${documentTypes.map(type => `<option value="${escapeHtml(type.name)}"${type.name === selected ? ' selected' : ''}>${escapeHtml(type.name)}</option>`).join('')}`;
+  async function loadDocumentTypes() {
+    try {
+      const response = await fetch('/api/document-types');
+      if (!response.ok) throw new Error('Unable to load document types');
+      documentTypes = await response.json();
+      document.querySelectorAll('[data-document-type-select]').forEach(select => {
+        const selected = select.value;
+        select.innerHTML = select.dataset.documentTypeSelect === 'search'
+          ? `<option value="">All Types</option>${documentTypeOptions('', false)}`
+          : documentTypeOptions();
+        if (documentTypes.some(type => type.name === selected)) select.value = selected;
+      });
+      const typeList = document.getElementById('documentTypeList');
+      typeList.innerHTML = documentTypes.length
+        ? documentTypes.map(type => `<article class="document-type-item" data-type-id="${type.id}"><div class="document-type-details"><strong>${escapeHtml(type.name)}</strong></div><div class="document-type-actions"><button class="text-button edit-document-type-btn" type="button">Edit</button><button class="text-button delete-document-type-btn" type="button">Delete</button></div><form class="document-type-edit-form hidden"><label>Document type name<input name="name" maxlength="80" value="${escapeHtml(type.name)}" required></label><div><button class="button button-primary" type="submit">Save</button><button class="text-button cancel-document-type-edit" type="button">Cancel</button></div></form></article>`).join('')
+        : '<p>No document types have been created yet.</p>';
+    } catch (error) {
+      console.error('Unable to load document types:', error);
+    }
+  }
   function showPage(page) { document.querySelectorAll('.page').forEach(item => item.classList.toggle('active', item.id === `${page}Page`)); document.querySelectorAll('.nav-link').forEach(item => item.classList.toggle('active', item.dataset.page === page)); }
   function updatePageFromHash() {
     const hash = location.hash;
@@ -161,9 +183,67 @@
   });
 
   const loginForm = document.getElementById('loginForm'); const uploadForm = document.getElementById('uploadForm'); const loginStatus = document.getElementById('loginStatus');
-  function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); updateFeedbackView(); }
+  const documentTypeManager = document.getElementById('documentTypeManager');
+  const documentTypeForm = document.getElementById('documentTypeForm');
+  const documentTypeStatus = document.getElementById('documentTypeStatus');
+  function setAdminState(isAdmin) { loginForm.classList.toggle('hidden', isAdmin); uploadForm.classList.toggle('hidden', !isAdmin); documentTypeManager.classList.toggle('hidden', !isAdmin); if (isAdmin) loadDocumentTypes(); updateFeedbackView(); }
   updatePageFromHash();
   loginForm.addEventListener('submit', async event => { event.preventDefault(); loginStatus.textContent = 'Signing in...'; const response = await api('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('password').value }) }); const data = await response.json(); if (!response.ok) { loginStatus.textContent = data.error || 'Login failed'; return; } localStorage.setItem(tokenKey, data.token); setAdminState(true); });
+  document.getElementById('showDocumentTypeForm').addEventListener('click', () => { documentTypeForm.classList.remove('hidden'); documentTypeStatus.textContent = ''; documentTypeForm.elements.name.focus(); });
+  document.getElementById('cancelDocumentTypeForm').addEventListener('click', () => { documentTypeForm.reset(); documentTypeForm.classList.add('hidden'); documentTypeStatus.textContent = ''; });
+  documentTypeForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const name = documentTypeForm.elements.name.value.trim();
+    if (!name) return;
+    documentTypeStatus.textContent = 'Creating document type...';
+    const response = await api('/api/document-types', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const data = await response.json();
+    if (!response.ok) { documentTypeStatus.textContent = data.error || 'Unable to create document type.'; return; }
+    documentTypeForm.reset();
+    documentTypeForm.classList.add('hidden');
+    documentTypeStatus.textContent = `“${data.name}” was created.`;
+    await loadDocumentTypes();
+  });
+  document.getElementById('documentTypeList').addEventListener('click', async event => {
+    const item = event.target.closest('.document-type-item');
+    if (!item) return;
+    const editButton = event.target.closest('.edit-document-type-btn');
+    if (editButton) {
+      const editForm = item.querySelector('.document-type-edit-form');
+      document.querySelectorAll('.document-type-edit-form').forEach(form => form.classList.add('hidden'));
+      editForm.classList.remove('hidden');
+      editForm.elements.name.focus();
+      return;
+    }
+    if (event.target.closest('.cancel-document-type-edit')) {
+      item.querySelector('.document-type-edit-form').classList.add('hidden');
+      return;
+    }
+    if (event.target.closest('.delete-document-type-btn')) {
+      const typeName = item.querySelector('.document-type-details strong').textContent;
+      if (!window.confirm(`Delete the document type "${typeName}"?`)) return;
+      documentTypeStatus.textContent = 'Deleting document type...';
+      const response = await api(`/api/document-types/${item.dataset.typeId}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) { documentTypeStatus.textContent = data.error || 'Unable to delete document type.'; return; }
+      documentTypeStatus.textContent = `“${typeName}” was deleted.`;
+      await loadDocumentTypes();
+    }
+  });
+  document.getElementById('documentTypeList').addEventListener('submit', async event => {
+    const editForm = event.target.closest('.document-type-edit-form');
+    if (!editForm) return;
+    event.preventDefault();
+    const item = editForm.closest('.document-type-item');
+    const name = editForm.elements.name.value.trim();
+    if (!name) return;
+    documentTypeStatus.textContent = 'Saving document type...';
+    const response = await api(`/api/document-types/${item.dataset.typeId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const data = await response.json();
+    if (!response.ok) { documentTypeStatus.textContent = data.error || 'Unable to update document type.'; return; }
+    documentTypeStatus.textContent = `Document type renamed to “${data.name}”.`;
+    await loadDocumentTypes();
+  });
   feedbackForm.addEventListener('submit', async event => { event.preventDefault(); feedbackStatus.textContent = 'Sending...'; const response = await fetch('/api/feedback', { method: 'POST', body: new FormData(feedbackForm) }); const data = await response.json(); feedbackStatus.textContent = response.ok ? 'Your message was sent.' : (data.error || 'Unable to send message.'); if (response.ok) feedbackForm.reset(); });
   uploadForm.addEventListener('submit', async event => {
     event.preventDefault();
@@ -203,9 +283,13 @@
     if (uploadResponse.ok) uploadForm.reset();
   });
   document.getElementById('logoutButton').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); clearAdminSession(); });
+  loadDocumentTypes();
 window.addEventListener('hashchange', updatePageFromHash);
 // Library button insertion
 if (document.getElementById('uploadForm')) {
+  const keywordsLabel = document.createElement('label');
+  keywordsLabel.innerHTML = 'Keywords<input name="keywords" placeholder="e.g. traction motor, axle, inspection">';
+  uploadForm.querySelector('.form-grid').appendChild(keywordsLabel);
     const libraryButton = document.createElement('button');
     libraryButton.id = 'libraryButton';
     libraryButton.className = 'text-button';
@@ -227,7 +311,8 @@ if (document.getElementById('uploadForm')) {
       location.hash = '#feedback-admin';
     });
 }
-function loadLibrary() {
+async function loadLibrary() {
+    await loadDocumentTypes();
     const libraryList = document.getElementById('libraryList');
     libraryList.innerHTML = '<p>Loading...</p>';
     const status = document.getElementById('searchStatus');
@@ -253,38 +338,72 @@ function loadLibrary() {
                 <p>${escapeHtml(doc.original_name)} <span>â€¢</span> ${formatSize(doc.file_size || 0)}</p>
               </div>
               <div class=\"library-actions\">
-                <button class=\"button button-small edit-btn\" data-id=\"${doc.id}\">Edit Caption</button>
+                <button class=\"button button-small edit-btn\" data-id=\"${doc.id}\" data-document-type=\"${escapeHtml(doc.document_type || '')}\" data-document-number=\"${escapeHtml(doc.document_number || '')}\" data-caption=\"${escapeHtml(doc.caption)}\" data-keywords=\"${escapeHtml(doc.keywords || '')}\">Edit</button>
                 <button class=\"button button-small delete-btn\" data-id=\"${doc.id}\">Delete</button>
                 <a class=\"button button-small download\" href=\"/api/download/${doc.id}\">Download</a>
               </div>
+              <form class=\"edit-document-form hidden\" data-id=\"${doc.id}\">
+                <label>Document type<select name=\"documentType\" required>${documentTypeOptions(doc.document_type || '')}</select></label>
+                <label>Document number<input name=\"documentNumber\" required></label>
+                <label>Caption<textarea name=\"caption\" rows=\"3\" required></textarea></label>
+                <label>Keywords<input name=\"keywords\" placeholder=\"e.g. traction motor, axle, inspection\"></label>
+                <div class=\"edit-form-actions\">
+                  <button class=\"button button-primary\" type=\"submit\">Save changes</button>
+                  <button class=\"text-button cancel-edit-btn\" type=\"button\">Cancel</button>
+                </div>
+                <p class=\"edit-status status\" aria-live=\"polite\"></p>
+              </form>
             </article>
           `;
         }).join('');
         // Add event listeners for edit and delete buttons
         libraryList.querySelectorAll('.edit-btn').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            const id = btn.getAttribute('data-id');
+          btn.addEventListener('click', () => {
             const item = btn.closest('.library-item');
-            const captionEl = item.querySelector('h2');
-            const currentCaption = captionEl.textContent;
-            const newCaption = prompt('Edit caption:', currentCaption);
-            if (newCaption === null || newCaption.trim() === '') return;
-            const trimmed = newCaption.trim();
-            if (trimmed === currentCaption) return;
+            const form = item.querySelector('.edit-document-form');
+            const isOpening = form.classList.contains('hidden');
+            libraryList.querySelectorAll('.edit-document-form').forEach(editForm => editForm.classList.add('hidden'));
+            if (!isOpening) return;
+            form.elements.documentType.value = btn.dataset.documentType || '';
+            form.elements.documentNumber.value = btn.dataset.documentNumber || '';
+            form.elements.caption.value = btn.dataset.caption || item.querySelector('h2').textContent;
+            form.elements.keywords.value = btn.dataset.keywords || '';
+            form.querySelector('.edit-status').textContent = '';
+            form.classList.remove('hidden');
+            form.elements.documentType.focus();
+          });
+        });
+        libraryList.querySelectorAll('.edit-document-form').forEach(form => {
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            const id = form.dataset.id;
+            const formData = new FormData(form);
+            const documentType = formData.get('documentType').trim();
+            const documentNumber = formData.get('documentNumber').trim();
+            const caption = formData.get('caption').trim();
+            const keywords = formData.get('keywords').trim();
+            const editStatus = form.querySelector('.edit-status');
+            if (!documentType || !documentNumber || !caption) {
+              editStatus.textContent = 'Document type, number and caption are required.';
+              return;
+            }
+            editStatus.textContent = 'Saving changes...';
             try {
               const response = await api(`/api/documents/${id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ caption: trimmed })
+                body: JSON.stringify({ documentType, documentNumber, caption, keywords })
               });
-              if (!response.ok) throw new Error('Failed to update caption');
-              captionEl.textContent = trimmed;
-              alert('Caption updated successfully.');
+              if (!response.ok) throw new Error('Failed to update document');
+              loadLibrary();
             } catch (err) {
               console.error(err);
-              alert('Failed to update caption: ' + err.message);
+              editStatus.textContent = 'Failed to update document. Please try again.';
             }
           });
+        });
+        libraryList.querySelectorAll('.cancel-edit-btn').forEach(btn => {
+          btn.addEventListener('click', () => btn.closest('.edit-document-form').classList.add('hidden'));
         });
         libraryList.querySelectorAll('.delete-btn').forEach(btn => {
           btn.addEventListener('click', async () => {

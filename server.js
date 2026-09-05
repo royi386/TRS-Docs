@@ -63,6 +63,25 @@ db.exec(`
   WHERE document_type = ''
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_document_type ON documents(document_type)');
+try {
+  db.exec('ALTER TABLE documents ADD COLUMN keywords TEXT NOT NULL DEFAULT \'\'');
+} catch (error) {
+  if (!error.message.includes('duplicate column name')) throw error;
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_keywords ON documents(keywords)');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS document_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+const addDocumentType = db.prepare('INSERT OR IGNORE INTO document_types (name) VALUES (?)');
+['SMI', 'MS', 'TC', 'Drawings'].forEach(name => addDocumentType.run(name));
+db.prepare(`
+  INSERT OR IGNORE INTO document_types (name)
+  SELECT DISTINCT TRIM(document_type) FROM documents WHERE TRIM(document_type) <> ''
+`).run();
 db.exec(`
   CREATE TABLE IF NOT EXISTS feedback_submissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +170,57 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/document-types', (req, res) => {
+  res.json(db.prepare('SELECT id, name FROM document_types ORDER BY name COLLATE NOCASE').all());
+});
+
+app.post('/api/document-types', requireAdmin, (req, res) => {
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  if (!name) return res.status(400).json({ error: 'Document type name is required' });
+  if (name.length > 80) return res.status(400).json({ error: 'Document type name must be 80 characters or fewer' });
+
+  try {
+    const result = db.prepare('INSERT INTO document_types (name) VALUES (?)').run(name);
+    res.status(201).json({ id: result.lastInsertRowid, name });
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This document type already exists' });
+    console.error('Create document type error:', error);
+    res.status(500).json({ error: 'Unable to create document type' });
+  }
+});
+
+app.patch('/api/document-types/:id', requireAdmin, (req, res) => {
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  if (!name) return res.status(400).json({ error: 'Document type name is required' });
+  if (name.length > 80) return res.status(400).json({ error: 'Document type name must be 80 characters or fewer' });
+
+  const documentType = db.prepare('SELECT id, name FROM document_types WHERE id = ?').get(req.params.id);
+  if (!documentType) return res.status(404).json({ error: 'Document type not found' });
+
+  try {
+    db.transaction(() => {
+      db.prepare('UPDATE document_types SET name = ? WHERE id = ?').run(name, documentType.id);
+      db.prepare('UPDATE documents SET document_type = ? WHERE document_type = ?').run(name, documentType.name);
+    })();
+    res.json({ success: true, id: documentType.id, name });
+  } catch (error) {
+    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'This document type already exists' });
+    console.error('Update document type error:', error);
+    res.status(500).json({ error: 'Unable to update document type' });
+  }
+});
+
+app.delete('/api/document-types/:id', requireAdmin, (req, res) => {
+  const documentType = db.prepare('SELECT id, name FROM document_types WHERE id = ?').get(req.params.id);
+  if (!documentType) return res.status(404).json({ error: 'Document type not found' });
+
+  const documentCount = db.prepare('SELECT COUNT(*) AS count FROM documents WHERE document_type = ?').get(documentType.name).count;
+  if (documentCount) return res.status(409).json({ error: `This type is used by ${documentCount} document${documentCount === 1 ? '' : 's'}. Reassign or rename those documents before deleting it.` });
+
+  db.prepare('DELETE FROM document_types WHERE id = ?').run(documentType.id);
+  res.json({ success: true });
+});
+
 app.post('/api/feedback', feedbackUpload.single('attachment'), (req, res) => {
   const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
   if (!message) {
@@ -217,22 +287,23 @@ app.get('/api/search', (req, res) => {
   const queryTerms = normalizeSearchText(req.query.q).split(' ').filter(Boolean);
   if (!queryTerms.length) return res.json([]);
 
-  const type = ['SMI', 'MS', 'TC', 'Drawings'].includes(req.query.type) ? req.query.type : '';
+  const requestedType = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+  const type = requestedType && db.prepare('SELECT 1 FROM document_types WHERE name = ?').get(requestedType) ? requestedType : '';
   const stmt = type
     ? db.prepare(`
-        SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+        SELECT id, filename, original_name, document_number, document_type, keywords, caption, upload_date, file_size
         FROM documents
-        WHERE document_type = ? OR (document_type = '' AND document_number LIKE ?)
+      WHERE document_type = ?
       `)
     : db.prepare(`
-        SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+        SELECT id, filename, original_name, document_number, document_type, keywords, caption, upload_date, file_size
         FROM documents
       `);
-  const documents = type ? stmt.all(type, `${type}%`) : stmt.all();
+  const documents = type ? stmt.all(type) : stmt.all();
 
   const results = documents
     .map(document => {
-      const text = normalizeSearchText(`${document.document_number} ${document.caption} ${document.original_name}`);
+      const text = normalizeSearchText(`${document.document_number} ${document.caption} ${document.keywords} ${document.original_name}`);
       const textTokens = text.split(' ').filter(Boolean);
       const matches = queryTerms.every(term => searchTermMatches(term, text, textTokens));
       const exactMatches = queryTerms.filter(term => text.includes(term)).length;
@@ -249,7 +320,7 @@ app.get('/api/search', (req, res) => {
 // Get all documents (for admin/upload page)
 app.get('/api/documents', requireAdmin, (req, res) => {
   const stmt = db.prepare(`
-    SELECT id, filename, original_name, document_number, caption, upload_date, file_size
+    SELECT id, filename, original_name, document_number, document_type, keywords, caption, upload_date, file_size
     FROM documents
     ORDER BY upload_date DESC
   `);
@@ -287,10 +358,15 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     }
     
     const { caption, documentNumber } = req.body;
-    const documentType = ['SMI', 'MS', 'TC', 'Drawings'].includes(req.body.documentType) ? req.body.documentType : '';
+    const documentType = typeof req.body.documentType === 'string' ? req.body.documentType.trim() : '';
+    const keywords = typeof req.body.keywords === 'string' ? req.body.keywords.trim() : '';
     if (!documentNumber || documentNumber.trim() === '') {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Document number is required' });
+    }
+    if (!documentType || !db.prepare('SELECT 1 FROM document_types WHERE name = ?').get(documentType)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Please select a valid document type' });
     }
     if (!caption || caption.trim() === '') {
       // Delete the uploaded file if no caption
@@ -299,8 +375,8 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     }
     
     const stmt = db.prepare(`
-      INSERT INTO documents (filename, original_name, document_number, document_type, caption, file_size, mime_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO documents (filename, original_name, document_number, document_type, keywords, caption, file_size, mime_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const result = stmt.run(
@@ -308,6 +384,7 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
       req.file.originalname,
       documentNumber.trim(),
       documentType,
+      keywords,
       caption.trim(),
       req.file.size,
       req.file.mimetype
@@ -370,6 +447,23 @@ app.get('/api/feedback/:id/download', requireAdmin, (req, res) => {
   const filePath = path.join(feedbackUploadDirectory, submission.filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Feedback file not found on server' });
   res.download(filePath, submission.original_name);
+});
+
+app.patch('/api/documents/:id', requireAdmin, (req, res) => {
+  const documentType = typeof req.body.documentType === 'string' ? req.body.documentType.trim() : '';
+  const documentNumber = typeof req.body.documentNumber === 'string' ? req.body.documentNumber.trim() : '';
+  const caption = typeof req.body.caption === 'string' ? req.body.caption.trim() : '';
+  const keywords = typeof req.body.keywords === 'string' ? req.body.keywords.trim() : '';
+  if (!documentType || !documentNumber || !caption) return res.status(400).json({ error: 'Document type, number and caption are required' });
+  if (!db.prepare('SELECT 1 FROM document_types WHERE name = ?').get(documentType)) return res.status(400).json({ error: 'Please select a valid document type' });
+
+  const result = db.prepare(`
+    UPDATE documents
+    SET document_type = ?, document_number = ?, caption = ?, keywords = ?
+    WHERE id = ?
+  `).run(documentType, documentNumber, caption, keywords, req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'Document not found' });
+  res.json({ success: true });
 });
 
 // Delete document (optional admin feature)
