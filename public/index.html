@@ -35,7 +35,7 @@
   const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
   const drawingApi = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(drawingTokenKey) ? { Authorization: `Bearer ${localStorage.getItem(drawingTokenKey)}` } : {}) } });
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
-  const formatSize = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const formatSize = bytes => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} KB`;
   let documentTypes = [];
   const documentTypeOptions = (selected = '', includePlaceholder = true) => `${includePlaceholder ? '<option value="">-- Select type --</option>' : ''}${documentTypes.map(type => `<option value="${escapeHtml(type.name)}"${type.name === selected ? ' selected' : ''}>${escapeHtml(type.name)}</option>`).join('')}`;
   async function loadDocumentTypes() {
@@ -680,9 +680,18 @@ async function loadLibrary() {
     if (!sources || !sources.length) return;
     const wrap = document.createElement('div');
     wrap.className = 'chat-sources';
-    sources.forEach(source => {
-      const label = source.documentNumber || source.title || source.source;
-      const meta = [source.documentType, source.page ? `Page ${source.page}` : '', source.source].filter(Boolean).join(' \u00b7 ');
+    // One chip per document, even when several passages came from the same PDF.
+    const uniqueSources = [];
+    const seenDocuments = new Set();
+    (sources || []).forEach(source => {
+      const key = source.documentId || source.source;
+      if (!key || seenDocuments.has(key)) return;
+      seenDocuments.add(key);
+      uniqueSources.push(source);
+    });
+    uniqueSources.forEach(source => {
+      const label = source.documentNumber || source.title || source.originalName || source.source;
+      const meta = [source.documentType, source.page ? `Page ${source.page}` : '', source.originalName || source.source].filter(Boolean).join(' \u00b7 ');
       const chip = document.createElement(source.documentId ? 'a' : 'span');
       chip.className = 'chat-source';
       if (source.documentId) {

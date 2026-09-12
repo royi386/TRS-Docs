@@ -506,7 +506,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   const statements = {
     getDocumentMeta: db.prepare(`
-      SELECT d.id, d.caption, d.document_number, d.document_type,
+      SELECT d.id, d.caption, d.document_number, d.document_type, d.original_name,
              COALESCE(dt.requires_login, 0) AS requires_login
       FROM documents d
       LEFT JOIN document_types dt ON dt.name = d.document_type
@@ -867,6 +867,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
           documentId: metadata?.id || row.document_id || null,
           documentNumber: metadata?.document_number || '',
           documentType: metadata?.document_type || '',
+          originalName: metadata?.original_name || row.source,
           title: metadata?.caption || row.source
         };
       })
@@ -1048,6 +1049,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       sources: sources.map(source => ({
         documentId: source.documentId,
         source: source.source,
+        originalName: source.originalName,
         documentNumber: source.documentNumber,
         documentType: source.documentType,
         title: source.title,
