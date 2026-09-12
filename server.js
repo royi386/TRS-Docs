@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const cors = require('cors');
+const { createRag, AiServiceError } = require('./rag');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -184,6 +185,32 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Retrieval augmented generation over the PDFs in the uploads folder.
+const rag = createRag({ db, uploadDirectory, logger: console });
+
+// Chat is public, so keep a light per-address limit to protect the AI quota.
+const chatHits = new Map();
+const CHAT_WINDOW_MS = 60 * 1000;
+const CHAT_MAX_PER_WINDOW = 12;
+
+function chatRateLimited(req) {
+  const key = req.ip || req.socket?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const recent = (chatHits.get(key) || []).filter(at => now - at < CHAT_WINDOW_MS);
+  if (recent.length >= CHAT_MAX_PER_WINDOW) {
+    chatHits.set(key, recent);
+    return true;
+  }
+  recent.push(now);
+  chatHits.set(key, recent);
+  if (chatHits.size > 5000) {
+    for (const [address, timestamps] of chatHits) {
+      if (!timestamps.some(at => now - at < CHAT_WINDOW_MS)) chatHits.delete(address);
+    }
+  }
+  return false;
+}
+
 // Multer storage configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -224,6 +251,50 @@ const feedbackUpload = multer({
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Library assistant
+app.get('/api/chat/status', async (req, res) => {
+  res.json(await rag.getStatus());
+});
+
+app.post('/api/chat', async (req, res) => {
+  if (!rag.isEnabled()) {
+    return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  }
+  const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
+  if (!question) return res.status(400).json({ error: 'Please type a question.' });
+  if (question.length > 1000) return res.status(400).json({ error: 'That question is too long. Please shorten it.' });
+  if (chatRateLimited(req)) {
+    return res.status(429).json({ error: 'Too many questions in a short time. Please wait a minute and try again.' });
+  }
+
+  try {
+    res.json(await rag.ask(question));
+  } catch (error) {
+    console.error('Chat error:', error);
+    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error instanceof AiServiceError) {
+      if (error.kind === 'auth') return res.status(503).json({ error: 'The library assistant is not configured correctly on this server.' });
+      if (error.kind === 'quota') return res.status(429).json({ error: 'The assistant has reached its usage limit. Please try again later.' });
+      if (error.kind === 'network') return res.status(502).json({ error: error.message });
+      if (error.kind === 'model') return res.status(503).json({ error: error.message });
+    }
+    res.status(500).json({ error: 'The assistant could not answer that question. Please try again.' });
+  }
+});
+
+// Admin: rebuild the assistant index. Runs in the background because a full
+// rebuild can take a while on a large library.
+app.post('/api/chat/reindex', requireAdmin, async (req, res) => {
+  if (!rag.isEnabled()) {
+    return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  }
+  if (rag.isIndexing()) {
+    return res.json({ started: false, message: 'Indexing is already running.', status: await rag.getStatus() });
+  }
+  rag.indexNow({ force: Boolean(req.body?.force), reason: 'admin' }).catch(error => console.error('Reindex error:', error));
+  res.json({ started: true, message: 'Indexing started.', status: await rag.getStatus() });
 });
 
 app.post('/api/admin/login', (req, res) => {
@@ -586,7 +657,12 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
       req.file.size,
       req.file.mimetype
     );
-    
+
+    // The assistant picks this up right away instead of waiting for the next scan.
+    if (rag.isEnabled()) {
+      rag.indexFile(req.file.filename).catch(error => console.error('Indexing uploaded PDF failed:', error.message));
+    }
+
     res.json({
       success: true,
       id: result.lastInsertRowid,
@@ -654,12 +730,18 @@ app.patch('/api/documents/:id', requireAdmin, (req, res) => {
   if (!documentType || !documentNumber || !caption) return res.status(400).json({ error: 'Document type, number and caption are required' });
   if (!db.prepare('SELECT 1 FROM document_types WHERE name = ?').get(documentType)) return res.status(400).json({ error: 'Please select a valid document type' });
 
-  const result = db.prepare(`
+  const existing = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Document not found' });
+  db.prepare(`
     UPDATE documents
     SET document_type = ?, document_number = ?, caption = ?, keywords = ?
     WHERE id = ?
   `).run(documentType, documentNumber, caption, keywords, req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'Document not found' });
+  // Editing metadata can move a document in or out of the restricted types,
+  // and the assistant index has to follow.
+  if (rag.isEnabled()) {
+    rag.indexFile(existing.filename).catch(error => console.error('Re-indexing edited document failed:', error.message));
+  }
   res.json({ success: true });
 });
 
@@ -682,6 +764,7 @@ app.delete('/api/documents/:id', requireAdmin, (req, res) => {
   
   // Delete from database
   db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+  rag.removeFile(doc.filename);
   
   res.json({ success: true, message: 'Document deleted' });
 });
@@ -710,4 +793,11 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`SMI MS TC Web App running on http://localhost:${PORT}`);
   console.log(`Upload directory: ${path.join(__dirname, 'uploads')}`);
+  if (rag.isEnabled()) {
+    const provider = process.env.AI_PROVIDER === 'gemini' ? 'gemini' : 'ollama';
+    console.log(`Library assistant: enabled using ${provider} (indexing PDFs in the background)`);
+  } else {
+    console.log('Library assistant: disabled (set AI_PROVIDER and its settings to turn it on)');
+  }
+  rag.start();
 });
