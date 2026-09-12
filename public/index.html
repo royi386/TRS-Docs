@@ -25,6 +25,8 @@
     <section class="page" id="feedbackPage"><div id="publicFeedback"><div class="eyebrow">Contact the library</div><h1>Send feedback</h1><p class="intro">Send a message or a file for the library team to review.</p><form id="feedbackForm" class="panel"><label>Your name<input name="senderName" autocomplete="name" required></label><label>Message<textarea name="message" rows="6" required placeholder="Write your message"></textarea></label><label class="file-drop">Optional file<input name="attachment" type="file"></label><button class="button button-primary" type="submit">Send message</button><p id="feedbackStatus" class="status" aria-live="polite"></p></form></div><div id="feedbackInbox" class="hidden"><div class="eyebrow">Admin inbox</div><h1>User feedback</h1><p class="intro">Messages and files submitted by users.</p><div id="feedbackList" class="feedback-list"></div></div></section>
 
   </main>
+  <button id="chatToggle" class="chat-toggle" type="button" aria-label="Ask the library assistant" aria-expanded="false" aria-controls="chatPanel"><span class="chat-toggle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></span><span class="chat-toggle-label">Ask AI</span></button>
+  <section id="chatPanel" class="chat-panel" role="dialog" aria-labelledby="chatTitle" hidden><header class="chat-header"><div><strong id="chatTitle">Library assistant</strong><p>Answers come only from the PDFs in this library.</p></div><button id="chatClose" class="chat-close" type="button" aria-label="Close chat">&times;</button></header><div id="chatMessages" class="chat-messages" aria-live="polite"></div><div class="chat-form-wrap"><form id="chatForm" class="chat-form" autocomplete="off"><textarea id="chatInput" rows="1" maxlength="1000" placeholder="Ask about a document or a specification..." aria-label="Your question" required></textarea><button id="chatSend" class="button button-primary" type="submit">Send</button></form><p class="chat-disclaimer">AI answers may be incomplete or wrong. Always check the linked PDF.</p></div></section>
   <footer>Built for Indian Railway Engineers • By Electric Loco Shed, Erode</footer>
 <script>
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
@@ -613,6 +615,225 @@ async function loadLibrary() {
         status.textContent = 'Error loading library.';
       });
   }
+/* ---------------- Library assistant chat ---------------- */
+(function setupLibraryAssistant() {
+  const toggleButton = document.getElementById('chatToggle');
+  const panel = document.getElementById('chatPanel');
+  const closeButton = document.getElementById('chatClose');
+  const messages = document.getElementById('chatMessages');
+  const form = document.getElementById('chatForm');
+  const input = document.getElementById('chatInput');
+  const sendButton = document.getElementById('chatSend');
+  const searchSection = document.getElementById('searchPage');
+  const searchControls = document.querySelector('.search-controls');
+
+  let assistantReady = false;
+  let isSending = false;
+
+  const CHAT_SUGGESTIONS = [
+    'What documents are available?',
+    'Axle bearing inspection procedure',
+    'Traction motor brush wear limit'
+  ];
+
+  function formatChatText(value) {
+    return escapeHtml(value)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/^[-*]\s+/gm, '\u2022 ')
+      .replace(/\[(\d+)\]/g, '<b class="chat-citation">[$1]</b>');
+  }
+
+  function addMessage(className, text) {
+    const bubble = document.createElement('div');
+    bubble.className = `chat-message ${className}`;
+    bubble.innerHTML = formatChatText(text);
+    messages.appendChild(bubble);
+    messages.scrollTop = messages.scrollHeight;
+    return bubble;
+  }
+
+  function addTyping() {
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-message chat-message-bot';
+    bubble.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
+    messages.appendChild(bubble);
+    messages.scrollTop = messages.scrollHeight;
+    return bubble;
+  }
+
+  function addSuggestions() {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-suggestions';
+    CHAT_SUGGESTIONS.forEach(suggestion => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-suggestion';
+      button.textContent = suggestion;
+      button.addEventListener('click', () => { wrap.remove(); sendQuestion(suggestion); });
+      wrap.appendChild(button);
+    });
+    messages.appendChild(wrap);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function addSources(sources) {
+    if (!sources || !sources.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-sources';
+    sources.forEach(source => {
+      const label = source.documentNumber || source.title || source.source;
+      const meta = [source.documentType, source.page ? `Page ${source.page}` : '', source.source].filter(Boolean).join(' \u00b7 ');
+      const chip = document.createElement(source.documentId ? 'a' : 'span');
+      chip.className = 'chat-source';
+      if (source.documentId) {
+        chip.href = `/api/view/${source.documentId}`;
+        chip.target = '_blank';
+        chip.rel = 'noopener noreferrer';
+      }
+      const title = document.createElement('b');
+      title.textContent = label;
+      const detail = document.createElement('span');
+      detail.textContent = meta;
+      chip.append(title, detail);
+      wrap.appendChild(chip);
+    });
+    messages.appendChild(wrap);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  // On small screens the search box is pinned to the bottom, so lift the
+  // button clear of it instead of letting the two overlap.
+  function positionToggle() {
+    let clearance = 0;
+    const searchVisible = searchSection
+      && searchSection.classList.contains('active')
+      && !searchSection.classList.contains('viewer-open');
+    if (searchControls && searchVisible && getComputedStyle(searchControls).position === 'fixed') {
+      clearance = Math.max(0, window.innerHeight - searchControls.getBoundingClientRect().top);
+    }
+    toggleButton.style.setProperty('--chat-clearance', `${Math.round(clearance)}px`);
+  }
+
+  function showNotReady(message) {
+    addMessage('chat-message-note', message);
+    sendButton.disabled = true;
+    input.disabled = true;
+    input.placeholder = 'Assistant unavailable';
+  }
+
+  async function prepareAssistant() {
+    // A failed check is retried the next time the panel opens, so the previous
+    // explanation must not pile up.
+    messages.querySelectorAll('.chat-message-note').forEach(note => note.remove());
+
+    let status = null;
+    try {
+      const response = await fetch('/api/chat/status');
+      if (response.ok) status = await response.json();
+    } catch (error) {
+      console.error('Assistant status check failed:', error);
+    }
+
+    if (!status || !status.enabled) {
+      showNotReady('The library assistant is not switched on yet. An administrator has to configure an AI provider on the server.');
+      return;
+    }
+
+    // A local model server that is down, or missing its models, is by far the
+    // most common problem, so say exactly what is wrong and how to fix it.
+    if (status.online === false) {
+      showNotReady(status.hint || 'The AI server is not reachable right now. Please try again shortly.');
+      return;
+    }
+    if (status.missingModels && status.missingModels.length) {
+      showNotReady(`These models still need to be downloaded: ${status.missingModels.join(', ')}. On the server, run: docker exec rail-docs-ollama ollama pull ${status.missingModels.join(' ')}`);
+      return;
+    }
+
+    assistantReady = true;
+    input.disabled = false;
+    sendButton.disabled = false;
+    input.placeholder = 'Ask about a document or a specification...';
+
+    const indexed = status.indexedFiles || 0;
+    if (!indexed) {
+      addMessage('chat-message-bot', 'The library is still being read for the first time. New PDFs are indexed automatically, so please ask again in a few minutes.');
+      return;
+    }
+    addMessage('chat-message-bot', `Ask me anything about the ${indexed} document${indexed === 1 ? '' : 's'} in this library. I answer only from their contents and link the PDFs I used.`);
+    addSuggestions();
+  }
+
+  async function sendQuestion(question) {
+    if (isSending) return;
+    const text = String(question || '').trim();
+    if (!text || input.disabled) return;
+
+    isSending = true;
+    sendButton.disabled = true;
+    input.value = '';
+    input.style.height = 'auto';
+    addMessage('chat-message-user', text);
+    const typing = addTyping();
+
+    let payload = null;
+    let ok = false;
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: text })
+      });
+      ok = response.ok;
+      payload = await response.json().catch(() => null);
+    } catch (error) {
+      console.error('Chat request failed:', error);
+    }
+    typing.remove();
+
+    if (!payload) addMessage('chat-message-error', 'Could not reach the assistant. Check the connection and try again.');
+    else if (!ok) addMessage('chat-message-error', payload.error || 'The assistant could not answer that question.');
+    else {
+      addMessage('chat-message-bot', payload.answer || 'No answer was returned.');
+      addSources(payload.sources);
+    }
+
+    isSending = false;
+    sendButton.disabled = false;
+    input.focus();
+  }
+
+  function setOpen(isOpen) {
+    panel.hidden = !isOpen;
+    toggleButton.setAttribute('aria-expanded', String(isOpen));
+    toggleButton.classList.toggle('hidden', isOpen);
+    positionToggle();
+    if (!isOpen) return;
+    if (!assistantReady) prepareAssistant();
+    window.setTimeout(() => input.focus(), 60);
+  }
+
+  toggleButton.addEventListener('click', () => setOpen(panel.hidden));
+  closeButton.addEventListener('click', () => setOpen(false));
+  form.addEventListener('submit', event => { event.preventDefault(); sendQuestion(input.value); });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+  });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !panel.hidden) setOpen(false);
+  });
+  window.addEventListener('resize', positionToggle);
+  window.addEventListener('hashchange', positionToggle);
+  if (window.MutationObserver) new MutationObserver(positionToggle).observe(searchSection, { attributes: true, attributeFilter: ['class'] });
+  positionToggle();
+})();
  </script>
 </body>
 </html>

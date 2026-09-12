@@ -14,6 +14,76 @@ services:
       DB_PATH: /app/data/smi_tc.db
       UPLOAD_DIR: /app/uploads
 
+      # "ollama" runs the AI on this server. "gemini" uses a hosted API key.
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: http://ollama:11434
+
+      # --- Local models (AI_PROVIDER=ollama) ---
+      # These two together need about 1.7 GB, so Immich keeps its memory.
+      # Bigger models answer better but are slow on a CPU-only box: see README.
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:1.7b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+
+      # --- Hosted option (AI_PROVIDER=gemini) ---
+      # Set GEMINI_API_KEY to use Google's free tier instead of local AI.
+
+      RAG_RESCAN_INTERVAL_MS: 300000
+
     volumes:
       - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/data:/app/data
       - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/uploads:/app/uploads
+
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rail-docs-ollama
+    restart: unless-stopped
+
+    volumes:
+      # Models live on the data disk next to the PDFs.
+      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/ollama:/root/.ollama
+
+    environment:
+      # Keep the chat and embedding model resident, but never load a third.
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+
+    # A hard ceiling so inference can never starve Immich or the OMV host.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-3g}
+
+    # Not published to the host: only the app reaches it, over the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # One shot helper: downloads the models on first start, then exits.
+  ollama-models:
+    image: ollama/ollama:latest
+    container_name: rail-docs-ollama-models
+    restart: "no"
+    depends_on:
+      - ollama
+
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:1.7b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until ollama list >/dev/null 2>&1; do
+          echo "waiting for the ollama service..."
+          sleep 3
+        done
+        for model in "$${OLLAMA_EMBED_MODEL}" "$${OLLAMA_CHAT_MODEL}"; do
+          echo "downloading $${model}"
+          ollama pull "$${model}" || exit 1
+        done
+        echo "models ready"

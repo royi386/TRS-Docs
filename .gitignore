@@ -5,5 +5,3 @@ smi_tc.db
 /uploads
 /feedback-uploads
 .env
-.git
-.gitignore
