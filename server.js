@@ -232,7 +232,7 @@ const upload = multer({
       cb(new Error('Only PDF files are allowed!'), false);
     }
   },
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 200 * 1024 * 1024 } // 200MB limit
 });
 
 const feedbackUpload = multer({
@@ -243,7 +243,7 @@ const feedbackUpload = multer({
       cb(null, 'feedback-' + uniqueSuffix + path.extname(file.originalname));
     }
   }),
-  limits: { fileSize: 25 * 1024 * 1024 }
+  limits: { fileSize: 200 * 1024 * 1024 } // matches the document limit
 });
 
 // Routes
@@ -258,6 +258,22 @@ app.get('/api/chat/status', async (req, res) => {
   res.json(await rag.getStatus());
 });
 
+// The chat remembers the last few questions in the same session, so follow-up
+// questions like "and its torque limit?" keep their context. The client sends
+// its own last turns; they are validated and capped here.
+const CHAT_MAX_HISTORY_TURNS = 6;
+
+function sanitizeChatHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) return [];
+  return rawHistory
+    .slice(-CHAT_MAX_HISTORY_TURNS)
+    .map(turn => ({
+      question: typeof turn?.question === 'string' ? turn.question.trim().slice(0, 1000) : '',
+      answer: typeof turn?.answer === 'string' ? turn.answer.trim().slice(0, 4000) : ''
+    }))
+    .filter(turn => turn.question);
+}
+
 app.post('/api/chat', async (req, res) => {
   if (!rag.isEnabled()) {
     return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
@@ -265,12 +281,13 @@ app.post('/api/chat', async (req, res) => {
   const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
   if (!question) return res.status(400).json({ error: 'Please type a question.' });
   if (question.length > 1000) return res.status(400).json({ error: 'That question is too long. Please shorten it.' });
+  const history = sanitizeChatHistory(req.body?.history);
   if (chatRateLimited(req)) {
     return res.status(429).json({ error: 'Too many questions in a short time. Please wait a minute and try again.' });
   }
 
   try {
-    res.json(await rag.ask(question));
+    res.json(await rag.ask(question, { history }));
   } catch (error) {
     console.error('Chat error:', error);
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
@@ -284,8 +301,23 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Live indexing progress for the admin panel. Uploads index in the background,
+// so this is how the admin sees that the new document is actually being read.
+const indexProgress = new Map(); // source -> { stage, pagesDone, pagesTotal, startedAt }
+let activeIndexSource = null;
+
+app.get('/api/chat/progress', requireAdmin, (req, res) => {
+  res.json({ active: activeIndexSource, progress: [...indexProgress.values()] });
+});
+
+// Admin: per-file index/OCR state for the indexing panel.
+app.get('/api/chat/index-status', requireAdmin, (req, res) => {
+  if (!rag.isEnabled()) return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  res.json({ files: rag.listFiles() });
+});
+
 // Admin: rebuild the assistant index. Runs in the background because a full
-// rebuild can take a while on a large library.
+// rebuild (OCR included) can take a while on a large library.
 app.post('/api/chat/reindex', requireAdmin, async (req, res) => {
   if (!rag.isEnabled()) {
     return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
@@ -660,13 +692,19 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
 
     // The assistant picks this up right away instead of waiting for the next scan.
     if (rag.isEnabled()) {
-      rag.indexFile(req.file.filename).catch(error => console.error('Indexing uploaded PDF failed:', error.message));
+      activeIndexSource = req.file.filename;
+      rag.indexFile(req.file.filename)
+        .then(result => console.log(`Indexed ${req.file.originalname}: ${result.status}`))
+        .catch(error => console.error('Indexing uploaded PDF failed:', error.message))
+        .finally(() => { if (activeIndexSource === req.file.filename) activeIndexSource = null; });
     }
 
     res.json({
       success: true,
       id: result.lastInsertRowid,
-      message: 'Document uploaded successfully'
+      message: 'Document uploaded successfully',
+      // The admin panel polls this endpoint to show live indexing progress.
+      progressUrl: '/api/chat/progress'
     });
   } catch (error) {
     console.error('Upload error:', error);

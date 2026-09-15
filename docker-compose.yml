@@ -29,9 +29,28 @@ services:
 
       RAG_RESCAN_INTERVAL_MS: 300000
 
+      # --- OCR for scanned PDFs (on by default) ---
+      # Scanned PDFs with no text layer are rasterised and read with Tesseract
+      # so the assistant can answer from them too. Language data (a few MB)
+      # downloads once into the cache folder below; point RAG_OCR_LANG_PATH at
+      # a mounted folder holding <lang>.traineddata.gz for offline servers.
+      RAG_OCR: "1"
+      # eng+hin: the library holds scanned documents in both English and Hindi;
+      # drop hin (or add other codes, e.g. tam) if not needed.
+      RAG_OCR_LANGS: eng+hin
+      RAG_OCR_CACHE_DIR: /app/ocr-cache
+      # RAG_OCR_LANG_PATH: /app/ocr-langs
+      # RAG_OCR_MAX_PAGES: 40
+      # RAG_OCR_DPI_SCALE: 2
+      # OCR parallelism: 0 (the default) uses one worker per core minus one, so
+      # indexing saturates the CPU like answering questions does. Cap it if the
+      # server feels busy while indexing (e.g. RAG_OCR_WORKERS: 4).
+      # RAG_OCR_WORKERS: 0
+
     volumes:
       - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/data:/app/data
       - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/uploads:/app/uploads
+      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/ocr-cache:/app/ocr-cache
 
     depends_on:
       - ollama
@@ -48,11 +67,16 @@ services:
     environment:
       # Keep the chat and embedding model resident, but never load a third.
       OLLAMA_MAX_LOADED_MODELS: "2"
-      OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+      # 2 lets a question be answered while an embedding batch runs. Raise to
+      # 3-4 if several people ask questions at the same time.
+      OLLAMA_NUM_PARALLEL: 2
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Cap inference threads so Ollama leaves headroom for the app and the OCR
+      # workers instead of grabbing every core during a question.
+      OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-8}
 
     # A hard ceiling so inference can never starve Immich or the OMV host.
-    mem_limit: ${OLLAMA_MEM_LIMIT:-3g}
+    # mem_limit: ${OLLAMA_MEM_LIMIT:-3g}
 
     # Not published to the host: only the app reaches it, over the compose network.
     healthcheck:

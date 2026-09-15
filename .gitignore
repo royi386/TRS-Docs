@@ -5,3 +5,7 @@ smi_tc.db
 /uploads
 /feedback-uploads
 .env
+.ocr-cache/
+.tmp-*.js
+.tmp-*.pdf
+vector.pdf
