@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
 const Database = require('better-sqlite3');
 const cors = require('cors');
 const { createRag, AiServiceError } = require('./rag');
@@ -251,6 +252,59 @@ const feedbackUpload = multer({
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Lightweight host status for the header widget: CPU load, temperature, memory.
+// Temperature comes from the host kernel through /sys (containers share the
+// host's sysfs), so no extra mounts are needed on typical Linux hosts. When no
+// readable sensor exists the field is null and the widget hides it.
+let systemStatusCache = { at: 0, value: null };
+
+function readCpuTemperature() {
+  let chips = [];
+  try {
+    chips = fs.readdirSync('/sys/class/hwmon').map(entry => {
+      const base = path.join('/sys/class/hwmon', entry);
+      let name = '';
+      try { name = fs.readFileSync(path.join(base, 'name'), 'utf8').trim(); } catch { }
+      const temps = [];
+      try {
+        for (const file of fs.readdirSync(base)) {
+          if (!/^temp\d+_input$/.test(file)) continue;
+          const raw = Number(fs.readFileSync(path.join(base, file), 'utf8').trim());
+          if (Number.isFinite(raw) && raw > 0) temps.push(raw / 1000);
+        }
+      } catch { }
+      return { name, max: temps.length ? Math.max(...temps) : null };
+    }).filter(chip => chip.max !== null);
+  } catch { }
+  if (!chips.length) return null;
+  // Prefer a real CPU sensor; ACPI thermal zones are a rough fallback.
+  const preferred = chips.find(chip => /^(coretemp|k10temp|zenpower|cpu_thermal)$/.test(chip.name))
+    || chips.find(chip => /^acpitz/.test(chip.name))
+    || chips[0];
+  return Math.round(preferred.max * 10) / 10;
+}
+
+app.get('/api/system-status', (req, res) => {
+  // Brief cache so several open tabs share one read, while values stay fresh
+  // for the 2-second polling of the header widget. The reads themselves are
+  // a few /proc and /sys files — microseconds of work.
+  if (systemStatusCache.value && Date.now() - systemStatusCache.at < 1000) {
+    return res.json(systemStatusCache.value);
+  }
+  const cores = os.cpus().length || 1;
+  const [load1] = os.loadavg();
+  const value = {
+    load1: Math.round(load1 * 100) / 100,
+    loadPercent: Math.round((load1 / cores) * 100),
+    cores,
+    cpuTemp: readCpuTemperature(),
+    memoryUsedPercent: Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 100),
+    uptimeSeconds: Math.round(os.uptime())
+  };
+  systemStatusCache = { at: Date.now(), value };
+  res.json(value);
 });
 
 // Library assistant

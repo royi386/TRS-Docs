@@ -12,7 +12,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-  <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Home</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
+  <header class="app-header"><div class="header-content"><div class="header-left"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><span id="serverStatus" class="server-status" hidden title="Server load and CPU temperature"><span class="server-status-dot" aria-hidden="true"></span><span id="serverStatusText">…</span></span></div><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Home</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
     <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><label class="library-mode-picker" for="libraryMode">Open library<select id="libraryMode"><option value="search">SMI / MS / TC</option><option value="drawings">Drawings</option><option value="pneumatic">Pneumatic Fault Details</option></select></label><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select" data-document-type-select="search"><option value="">All Types</option></select></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
     <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section><section id="drawingUserManager" class="panel hidden"><h2>Drawing users</h2><p>Create and manage local accounts for the Drawings access page.</p><button id="showDrawingUserManager" class="button button-dark" type="button">Manage drawing users</button><div id="drawingUserControls" class="hidden"><form id="drawingUserForm" class="document-type-form"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><div><button class="button button-primary" type="submit">Create user</button></div></form><p id="drawingUserStatus" class="status" aria-live="polite"></p><div id="drawingUserList" class="document-type-list"></div></div></section><section id="indexingPanel" class="panel hidden"><h2>Indexing &amp; OCR</h2><p>The library assistant reads every PDF into a searchable index. Scanned PDFs with no text layer are read with OCR automatically, so give it time to work through them.</p><div id="indexingStats" class="index-stat-grid" aria-live="polite"></div><div class="index-actions"><button id="reindexButton" class="button button-dark" type="button">Reindex all documents</button><span class="field-hint">Forces every PDF to be read again — use after changing OCR or AI settings.</span></div><p id="indexingStatus" class="status" aria-live="polite"></p><label class="checkbox-field"><input id="showIndexedFiles" type="checkbox"> Show indexed files too</label><div id="indexingFileList" class="document-type-list"></div></section></section>
@@ -950,6 +950,48 @@ async function loadLibrary() {
   window.addEventListener('hashchange', positionToggle);
   if (window.MutationObserver) new MutationObserver(positionToggle).observe(searchSection, { attributes: true, attributeFilter: ['class'] });
   positionToggle();
+})();
+
+// Header server-status chip: load, temperature and memory from /api/system-status.
+(() => {
+  const chip = document.getElementById('serverStatus');
+  if (!chip) return;
+  const text = document.getElementById('serverStatusText');
+  let failures = 0;
+
+  const fmtUptime = seconds => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    return days ? `${days}d ${hours}h` : `${hours}h ${Math.floor((seconds % 3600) / 60)}m`;
+  };
+
+  async function refreshServerStatus() {
+    try {
+      const response = await fetch('/api/system-status');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      failures = 0;
+      chip.hidden = false;
+      chip.classList.remove('server-status-down', 'server-status-warm', 'server-status-hot');
+      const temp = status.cpuTemp;
+      // Green when idle; amber when busy or warm; red only when genuinely hot
+      // or saturated, so the dot matches how the server actually feels.
+      if ((temp !== null && temp >= 80) || status.loadPercent >= 90) chip.classList.add('server-status-hot');
+      else if ((temp !== null && temp >= 70) || status.loadPercent >= 70) chip.classList.add('server-status-warm');
+      chip.title = `Server: load ${status.load1} of ${status.cores} cores · memory ${status.memoryUsedPercent}% · up ${fmtUptime(status.uptimeSeconds)}`;
+      text.textContent = `Load ${status.loadPercent}%${temp !== null && temp !== undefined ? ` · ${temp}°C` : ''}`;
+    } catch {
+      // Stay quiet for transient hiccups; only flag the chip after a minute.
+      if (++failures >= 6) {
+        chip.hidden = false;
+        text.textContent = 'Status unavailable';
+      }
+      if (failures >= 6) chip.classList.add('server-status-down');
+    }
+  }
+
+  refreshServerStatus();
+  window.setInterval(refreshServerStatus, 2000);
 })();
  </script>
 </body>

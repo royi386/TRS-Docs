@@ -60,13 +60,14 @@ const SYSTEM_INSTRUCTION = [
   'Rules:',
   '1. Use only facts that appear in the context passages. Never use outside knowledge, and never guess.',
   '2. If the context does not contain the answer, reply that the library does not appear to cover it and list the closest related documents you did find. Do not invent document numbers, dates or values.',
-  '3. Cite the passages you use with their bracketed numbers, for example [1] or [2][3].',
-  '4. Prefer exact document numbers, figures and technical wording from the passages.',
-  '5. If the passages disagree, say so rather than picking one silently.',
-  '6. Answer in the same language the question was asked in.',
-  '7. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back.',
-  '8. When you mention a document, use its document number and caption from the passage header.',
-  '9. The conversation history shows what was discussed earlier. Use it to understand short follow-up questions, but answer only from the passages, never from memory of the earlier conversation.'
+  '3. Some passages are unreadable because of broken OCR (random symbols instead of words). Never quote them and never infer an answer from them; ignore them unless another passage answers the question.',
+  '4. Cite the passages you use with their bracketed numbers, for example [1] or [2][3].',
+  '5. Prefer exact document numbers, figures and technical wording from the passages.',
+  '6. If the passages disagree, say so rather than picking one silently.',
+  '7. Answer in the same language the question was asked in.',
+  '8. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back.',
+  '9. When you mention a document, use its document number and caption from the passage header. Never mention file names in your answer; if a passage has no document number, refer to it by its caption.',
+  '10. The conversation history shows what was discussed earlier. Use it to understand short follow-up questions, but answer only from the passages, never from memory of the earlier conversation.'
 ].join('\n');
 
 /**
@@ -95,42 +96,40 @@ function historyBlock(history, config) {
 /**
  * Follow-up questions such as "and its torque?" are meaningless on their own,
  * so retrieval searches for a rewritten, self-contained question instead. The
- * rewrite is heuristic and free: last question + last answer give the pronouns
- * their antecedents without an extra model round-trip.
+ * rewrite is heuristic and free: the previous question names the subject, and
+ * a short follow-up keeps it in front. Only the previous *question* is ever
+ * used — never the previous answer, whose first sentence is often a refusal
+ * ("The library does not appear to cover it...") or boilerplate, and one
+ * poisoned search string made every following question retrieve junk.
+ *
+ * Short questions are common and self-contained ("What is VCB?"), so a bare
+ * length rule never rewrites on its own; the previous question only becomes
+ * part of the search when the follow-up actually leans on it with a dangling
+ * reference.
  */
 function standaloneQuestion(question, history) {
   const previous = Array.isArray(history) ? history[history.length - 1] : null;
   const priorQuestion = String(previous?.question || '').trim();
-  const priorAnswer = String(previous?.answer || '').trim();
   if (!priorQuestion || priorQuestion === question) return question;
 
   // Only rewrite when the question actually leans on the previous turn: it
-  // opens with a dangling reference, mentions one mid-sentence, or is a short
-  // fragment.
+  // opens with a dangling reference, or mentions one mid-sentence. Short
+  // fragments like "and its torque?" fall in the first group.
   const needsContext = /^(and|also|its|it's|it\b|they|their|them|that\b|this\b|those|these|same|so\b|then|what about|how about)\b/i.test(question)
-    || (/\b(it|its|itself|their|them|same|above|earlier|aforementioned)\b/i.test(question) && question.length < 150)
-    || question.length < 25;
+    || (/\b(it|its|itself|their|them|same|above|earlier|aforementioned)\b/i.test(question) && question.length < 150);
   if (!needsContext) return question;
 
-  // A short answer usually names the thing the follow-up is about (a document
-  // number, a component...), so lead with it.
-  const subject = priorAnswer
-    .replace(/\[\d+\]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(/[.!?\n]/)[0]
-    .slice(0, 160)
-    .trim();
-  const context = subject && subject.length > 15 ? subject : priorQuestion;
-  return `${context} — ${question}`;
+  return `${priorQuestion} — ${question}`;
 }
 
 /**
  * Builds an FTS5 MATCH expression from a question. Terms are OR-ed so a passage
  * mentioning most of the asked things outranks one mentioning a single word;
- * stopwords and short tokens are dropped, and numbers (document numbers, values
- * like 0003 or 260) are kept verbatim because they are the strongest signal.
- * Returns '' when the question has nothing worth a keyword lookup.
+ * stopwords are dropped, and numbers (document numbers, values like 0003 or
+ * 260) are kept verbatim because they are the strongest signal. Two-letter
+ * terms are kept too: railway jargon is full of short acronyms (TM, BP, CC)
+ * that stopwords do not cover. Returns '' when the question has nothing worth
+ * a keyword lookup.
  */
 function keywordQueryFromQuestion(question) {
   const stopWords = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'is', 'are', 'was', 'were', 'be', 'been', 'and', 'or', 'what', 'which', 'who', 'whom', 'how', 'why', 'when', 'where', 'does', 'do', 'did', 'can', 'could', 'should', 'would', 'will', 'shall', 'may', 'might', 'must', 'give', 'tell', 'show', 'list', 'find', 'any', 'its', 'it', 'his', 'her', 'their', 'there', 'that', 'this', 'these', 'those', 'from', 'with', 'as', 'at', 'by', 'per', 'not', 'no', 'yes', 'about', 'into', 'over', 'under', 'please']);
@@ -139,7 +138,7 @@ function keywordQueryFromQuestion(question) {
   for (const raw of String(question || '').toLowerCase().split(/[^a-z0-9]+/)) {
     const term = raw.trim();
     if (!term || term.length < 2 || seen.has(term)) continue;
-    if (!/\d/.test(term) && (stopWords.has(term) || term.length < 3)) continue;
+    if (!/\d/.test(term) && stopWords.has(term)) continue;
     seen.add(term);
     terms.push(term);
     if (terms.length >= 12) break;
@@ -209,6 +208,11 @@ function getConfig() {
     // what was asked several times.
     keywordWeight: Number.isFinite(Number(process.env.RAG_KEYWORD_WEIGHT)) ? Math.max(Number(process.env.RAG_KEYWORD_WEIGHT), 0) : 0.5,
     vectorWeight: Number.isFinite(Number(process.env.RAG_VECTOR_WEIGHT)) ? Math.max(Number(process.env.RAG_VECTOR_WEIGHT), 0) : 0.5,
+    // Passages scoring far below the best hit are noise that the model never
+    // cites, but they still show up as suggested documents (e.g. a wheel-wear
+    // sheet suggested for a "tm bellow" question). Keep only passages within
+    // this ratio of the best score.
+    scoreGapRatio: Number.isFinite(Number(process.env.RAG_SCORE_GAP_RATIO)) ? Math.min(Math.max(Number(process.env.RAG_SCORE_GAP_RATIO), 0), 1) : 0.55,
     perDocumentLimit: Math.max(1, Math.min(readNumber(process.env.RAG_PER_DOC_LIMIT, 3), topK)),
     retrievePool: Math.max(topK, Math.min(readNumber(process.env.RAG_RETRIEVE_POOL, topK * 4), 40))
   };
@@ -605,6 +609,36 @@ function collapse(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+// OCR on poor scans turns a page into symbol soup ("4) A =F न > iv) ¢ eC").
+// That junk embeds poorly but still steals bm25 keyword matches, which is how
+// a cover page displaced the real answer page and the chat cited the wrong
+// page. Two signals separate it from real content in any supported script
+// (Latin, Devanagari, Arabic): junk words are mostly punctuation and lone
+// characters (low readable-word ratio), and OCR noise splits words into
+// letter debris (very short average word). Real pages pass both easily; the
+// junk page this defends against scored 0.65 / 1.7.
+const MIN_READABLE_RATIO = 0.6;
+const MIN_MEAN_WORD_LENGTH = 3;
+
+function readableRatio(text) {
+  let counted = 0;
+  let good = 0;
+  for (const word of String(text || '').toLowerCase().split(/\s+/)) {
+    if (word.length < 2) continue;
+    counted += 1;
+    const letters = (word.match(/[a-z0-9\u0900-\u097F\u0600-\u06FF]/g) || []).length;
+    if (letters * 10 >= word.length * 6) good += 1;
+  }
+  return counted ? good / counted : 0;
+}
+
+function isReadableText(text) {
+  const words = String(text || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const meanLength = words.reduce((sum, word) => sum + word.length, 0) / words.length;
+  return readableRatio(text) >= MIN_READABLE_RATIO && meanLength >= MIN_MEAN_WORD_LENGTH;
+}
+
 function hardSplit(text, maxChars) {
   if (text.length <= maxChars) return [text];
   const pieces = [];
@@ -650,6 +684,9 @@ function buildChunks(pages, options = {}) {
   for (const page of pages) {
     for (const content of chunkPageText(page.text, { maxChars, overlap })) {
       if (chunks.length >= maxChunks) return chunks;
+      // Unreadable chunks never enter the index, so they can neither be
+      // retrieved nor cited with a wrong page number later.
+      if (!isReadableText(content)) continue;
       chunks.push({ page: page.page, content });
     }
   }
@@ -1339,7 +1376,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
     const [questionVector] = await embedTexts([question], 'RETRIEVAL_QUERY');
     if (!questionVector) return [];
     const keywordQuery = keywordQueryFromQuestion(question);
-    const matches = retrievalCandidates(questionVector, topK, config.minScore, keywordQuery);
+    // Overshoot the cap, then drop unreadable (OCR junk) passages before the
+    // final cut, so junk still sitting in a stale index cannot crowd real
+    // passages out of the top results.
+    const matches = retrievalCandidates(questionVector, topK * 2, config.minScore, keywordQuery);
     if (!matches.length) return [];
     const rows = statements.fetchChunks.all(JSON.stringify(matches.map(match => match.id)));
     const byId = new Map(rows.map(row => [row.id, row]));
@@ -1361,7 +1401,13 @@ function createRag({ db, uploadDirectory, logger = console }) {
           title: metadata?.caption || row.source
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(source => isReadableText(source.content))
+      // Filler cut: a passage scoring far below the best hit is noise that the
+      // answer never cites, but it would still be listed as a suggested
+      // document in the UI.
+      .filter(source => source.score >= (matches[0]?.score || 0) * config.scoreGapRatio)
+      .slice(0, topK);
   }
 
   /* ---------------- answer generation ---------------- */
@@ -1375,7 +1421,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
       const heading = [
         `[${index + 1}]`,
         source.documentNumber ? `Document number: ${source.documentNumber}` : '',
-        `File: ${source.source}`,
+        // The internal file name (tc-1788…pdf) is storage plumbing, not
+        // something a user needs in an answer, so it is only shown when it is
+        // the only identification available (no number, no caption).
+        !source.documentNumber && !(source.title && source.title !== source.source) ? `File: ${source.source}` : '',
         source.title && source.title !== source.source ? `Caption: ${source.title}` : '',
         source.page ? `Page: ${source.page}` : ''
       ].filter(Boolean).join(' | ');
@@ -1652,6 +1701,15 @@ function createRag({ db, uploadDirectory, logger = console }) {
         else if (probe.missing.length) logger.warn(`[rag] local models are not downloaded yet: ${probe.missing.join(', ')}. Pull them with: ollama pull ${probe.missing.join(' ')}`);
       })
       .catch(() => {});
+
+    // Surface files that can never be cited properly: they are indexed but the
+    // library has no row for them, so answers can only show a raw file name.
+    try {
+      const orphans = statements.listIndexedSources.all().filter(row => row.status === 'indexed' && !documentMetadata(row.source));
+      if (orphans.length) {
+        logger.warn(`[rag] ${orphans.length} indexed file(s) have no library metadata, so they cannot be cited by document number: ${orphans.slice(0, 5).map(row => row.source).join(', ')}${orphans.length > 5 ? ', …' : ''}`);
+      }
+    } catch {}
 
     const tick = async () => {
       if (stopped) return;
