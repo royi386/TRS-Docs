@@ -12,10 +12,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-  <header class="app-header"><div class="header-content"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Home</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
+  <header class="app-header"><div class="header-content"><div class="header-left"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><span id="serverStatus" class="server-status" hidden title="Server load and CPU temperature"><span class="server-status-dot" aria-hidden="true"></span><span id="serverStatusText">…</span></span></div><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Home</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
-    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><label class="library-mode-picker" for="libraryMode">Open library<select id="libraryMode"><option value="search">SMI / MS / TC</option><option value="drawings">Drawings</option><option value="pneumatic">Pneumatic Fault Details</option></select></label><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select" data-document-type-select="search"><option value="">All Types</option></select><button class="button button-primary" type="submit">Search</button></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
-    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section><section id="drawingUserManager" class="panel hidden"><h2>Drawing users</h2><p>Create and manage local accounts for the Drawings access page.</p><button id="showDrawingUserManager" class="button button-dark" type="button">Manage drawing users</button><div id="drawingUserControls" class="hidden"><form id="drawingUserForm" class="document-type-form"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><div><button class="button button-primary" type="submit">Create user</button></div></form><p id="drawingUserStatus" class="status" aria-live="polite"></p><div id="drawingUserList" class="document-type-list"></div></div></section></section>
+    <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><label class="library-mode-picker" for="libraryMode">Open library<select id="libraryMode"><option value="search">SMI / MS / TC</option><option value="drawings">Drawings</option><option value="pneumatic">Pneumatic Fault Details</option></select></label><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO documents by number or caption.</p><div id="results" class="results"></div><section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select" data-document-type-select="search"><option value="">All Types</option></select></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
+    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section><section id="drawingUserManager" class="panel hidden"><h2>Drawing users</h2><p>Create and manage local accounts for the Drawings access page.</p><button id="showDrawingUserManager" class="button button-dark" type="button">Manage drawing users</button><div id="drawingUserControls" class="hidden"><form id="drawingUserForm" class="document-type-form"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><div><button class="button button-primary" type="submit">Create user</button></div></form><p id="drawingUserStatus" class="status" aria-live="polite"></p><div id="drawingUserList" class="document-type-list"></div></div></section><section id="indexingPanel" class="panel hidden"><h2>Indexing &amp; OCR</h2><p>The library assistant reads every PDF into a searchable index. Scanned PDFs with no text layer are read with OCR automatically, so give it time to work through them.</p><div id="indexingStats" class="index-stat-grid" aria-live="polite"></div><div class="index-actions"><button id="reindexButton" class="button button-dark" type="button">Reindex all documents</button><span class="field-hint">Forces every PDF to be read again — use after changing OCR or AI settings.</span></div><p id="indexingStatus" class="status" aria-live="polite"></p><label class="checkbox-field"><input id="showIndexedFiles" type="checkbox"> Show indexed files too</label><div id="indexingFileList" class="document-type-list"></div></section></section>
 
     <section class="page" id="drawingsPage"><div class="eyebrow">Indian Railways / Engineering Library</div><h1>Drawings<br><em>access.</em></h1><div id="drawingsLoginPanel" class="panel"><p>Sign in with your Rail Docs drawings account to access the official SLAM drawings portal.</p><form id="drawingsLoginForm"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="button button-primary" type="submit">Sign in</button><button id="createDrawingsAccountButton" class="text-button" type="button">Create account</button><p id="drawingsLoginStatus" class="status" aria-live="polite"></p></form></div><div id="drawingsAccessPanel" class="panel hidden"><h2>Access verified</h2><p>You can now continue to the official SLAM portal. Sign in there using your SLAM credentials.</p><a class="button button-primary" href="https://slam.indianrail.gov.in/SLAM/Login.aspx" target="_blank" rel="noopener noreferrer">Open SLAM drawings portal</a><button id="drawingsLogoutButton" class="text-button" type="button">Sign out</button></div></section>
     <section class="page" id="drawingsRegisterPage"><div class="eyebrow">Indian Railways / Drawings Library</div><h1>Create<br><em>account.</em></h1><p class="intro">Submit your details for admin approval.</p><form id="drawingsRegisterForm" class="panel"><div class="form-grid"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><label>Name<input name="fullName" maxlength="120" autocomplete="name" required></label><label>Designation<input name="designation" maxlength="120" required></label><label>Division<input name="division" maxlength="120" required></label><label>Phone number<input name="phoneNumber" type="tel" minlength="6" maxlength="30" autocomplete="tel" required></label></div><button class="button button-primary" type="submit">Submit request</button><a class="text-button" href="#drawings">Back to sign in</a><p id="drawingsRegisterStatus" class="status" aria-live="polite"></p></form></section>
@@ -35,7 +35,7 @@
   const api = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(tokenKey) ? { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } : {}) } });
   const drawingApi = (path, options = {}) => fetch(path, { ...options, headers: { ...(options.headers || {}), ...(localStorage.getItem(drawingTokenKey) ? { Authorization: `Bearer ${localStorage.getItem(drawingTokenKey)}` } : {}) } });
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
-  const formatSize = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const formatSize = bytes => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} KB`;
   let documentTypes = [];
   const documentTypeOptions = (selected = '', includePlaceholder = true) => `${includePlaceholder ? '<option value="">-- Select type --</option>' : ''}${documentTypes.map(type => `<option value="${escapeHtml(type.name)}"${type.name === selected ? ' selected' : ''}>${escapeHtml(type.name)}</option>`).join('')}`;
   async function loadDocumentTypes() {
@@ -253,22 +253,81 @@
   const drawingUserForm = document.getElementById('drawingUserForm');
   const drawingUserStatus = document.getElementById('drawingUserStatus');
   const drawingUserList = document.getElementById('drawingUserList');
+  const indexingPanel = document.getElementById('indexingPanel');
+  const indexingStats = document.getElementById('indexingStats');
+  const indexingFileList = document.getElementById('indexingFileList');
+  const indexingStatus = document.getElementById('indexingStatus');
+  const reindexButton = document.getElementById('reindexButton');
+  const showIndexedFiles = document.getElementById('showIndexedFiles');
+  let indexingFiles = [];
+  let indexingTimer = null;
+  const indexStateBadge = file => {
+    if (file.status === 'indexed') return file.ocrPages > 0 ? `<span class="index-status index-status-ocr">indexed · OCR ${file.ocrPages}p</span>` : '<span class="index-status index-status-ok">indexed</span>';
+    if (file.status === 'restricted') return '<span class="index-status index-status-restricted">restricted</span>';
+    if (file.status === 'error' || file.status === 'no-text') return `<span class="index-status index-status-problem">${file.status === 'no-text' ? 'no text' : 'error'}</span>`;
+    return `<span class="index-status">${escapeHtml(file.status)}</span>`;
+  };
+  function renderIndexingFiles() {
+    const visible = showIndexedFiles.checked ? indexingFiles : indexingFiles.filter(file => file.status !== 'indexed');
+    indexingFileList.innerHTML = visible.length ? visible.map(file => `<article class="document-type-item"><div class="document-type-details"><strong>${escapeHtml(file.document_number || file.source)}</strong>${indexStateBadge(file)}<p>${escapeHtml(file.title || '')}${file.error ? ` — ${escapeHtml(file.error)}` : ''}</p></div><div class="document-type-actions"><span class="field-hint">${file.chunkCount} chunks · ${file.pageCount} pages · ${escapeHtml(String(file.indexedAt || ''))}</span></div></article>`).join('') : `<p>${showIndexedFiles.checked ? 'No files indexed yet.' : 'Nothing needs attention — every indexed file is searchable.'}</p>`;
+  }
+  async function loadIndexingStatus() {
+    const statusResponse = await api('/api/chat/status');
+    if (!statusResponse.ok) return;
+    const status = await statusResponse.json();
+    indexingStats.innerHTML = [
+      ['Searchable files', status.indexedFiles],
+      ['Needs attention', status.problemFiles],
+      ['Indexed with OCR', status.ocrFiles || 0],
+      ['Text chunks', status.chunks],
+      ['Assistant', status.enabled ? (status.indexing ? 'Indexing…' : (status.online ? 'Ready' : 'AI offline')) : 'Disabled']
+    ].map(([label, value]) => `<div class="index-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
+    const filesResponse = await api('/api/chat/index-status');
+    if (filesResponse.ok) {
+      indexingFiles = (await filesResponse.json()).files || [];
+      renderIndexingFiles();
+    }
+  }
+  function startIndexingPolling() {
+    if (indexingTimer) return;
+    indexingTimer = window.setInterval(loadIndexingStatus, 5000);
+  }
+  function stopIndexingPolling() { if (indexingTimer) { window.clearInterval(indexingTimer); indexingTimer = null; } }
+  reindexButton.addEventListener('click', async () => {
+    if (!window.confirm('Re-read and re-index every PDF? On a large library with scanned files this can take a long time.')) return;
+    reindexButton.disabled = true;
+    indexingStatus.textContent = 'Starting reindex...';
+    const response = await api('/api/chat/reindex', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) });
+    const data = await response.json().catch(() => ({}));
+    reindexButton.disabled = false;
+    if (!response.ok) { indexingStatus.textContent = data.error || 'Unable to start reindexing.'; return; }
+    indexingStatus.textContent = data.message || 'Indexing started.';
+    loadIndexingStatus();
+    startIndexingPolling();
+  });
+  showIndexedFiles.addEventListener('change', renderIndexingFiles);
   const adminMenu = document.createElement('section');
   adminMenu.id = 'adminMenu';
   adminMenu.className = 'admin-menu panel hidden';
-  adminMenu.innerHTML = '<h2>Admin actions</h2><div class="admin-action-grid"><button class="button button-dark" type="button" data-admin-section="upload">Upload document</button><button class="button button-dark" type="button" data-admin-section="types">Manage document types</button><button class="button button-dark" type="button" data-admin-section="users">Manage drawing users</button><button class="button button-dark" type="button" data-admin-action="library">Library</button><button class="button button-dark" type="button" data-admin-action="feedback">User feedback</button><button class="button button-dark" type="button" data-admin-action="logout">Sign out</button></div>';
+  adminMenu.innerHTML = '<h2>Admin actions</h2><div class="admin-action-grid"><button class="button button-dark" type="button" data-admin-section="upload">Upload document</button><button class="button button-dark" type="button" data-admin-section="types">Manage document types</button><button class="button button-dark" type="button" data-admin-section="users">Manage drawing users</button><button class="button button-dark" type="button" data-admin-section="indexing">Indexing</button><button class="button button-dark" type="button" data-admin-action="library">Library</button><button class="button button-dark" type="button" data-admin-action="feedback">User feedback</button><button class="button button-dark" type="button" data-admin-action="logout">Sign out</button></div>';
   const appMain = document.querySelector('.app-main');
   appMain.insertBefore(adminMenu, appMain.firstElementChild);
-  const hideAdminSections = () => [uploadForm, documentTypeManager, drawingUserManager].forEach(section => section.classList.add('hidden'));
+  const hideAdminSections = () => { [uploadForm, documentTypeManager, drawingUserManager, indexingPanel].forEach(section => section.classList.add('hidden')); stopIndexingPolling(); };
   function setAdminMenuActive(action) {
     adminMenu.querySelectorAll('[data-admin-section], [data-admin-action]').forEach(button => button.classList.remove('active'));
     const activeButton = adminMenu.querySelector(`[data-admin-section="${action}"], [data-admin-action="${action}"]`);
     if (activeButton) activeButton.classList.add('active');
   }
+  const adminSectionPanels = { upload: uploadForm, types: documentTypeManager, users: drawingUserManager, indexing: indexingPanel };
+  function activeAdminSection() {
+    const activeButton = adminMenu.querySelector('[data-admin-section].active');
+    return activeButton ? adminSectionPanels[activeButton.dataset.adminSection] : null;
+  }
   function showAdminSection(section) {
     hideAdminSections();
     section.classList.remove('hidden');
-    setAdminMenuActive({ [uploadForm.id]: 'upload', [documentTypeManager.id]: 'types', [drawingUserManager.id]: 'users' }[section.id]);
+    setAdminMenuActive({ [uploadForm.id]: 'upload', [documentTypeManager.id]: 'types', [drawingUserManager.id]: 'users', [indexingPanel.id]: 'indexing' }[section.id]);
+    if (section === indexingPanel) { loadIndexingStatus(); startIndexingPolling(); }
   }
   async function loadDrawingUsers() {
     const response = await api('/api/drawing-users');
@@ -292,7 +351,7 @@
     adminMenu.classList.toggle('hidden', !isAdmin || !isAdminView);
     if (isAdmin) {
       hideAdminSections();
-      if (location.hash === '#upload') showAdminSection(uploadForm);
+      if (location.hash === '#upload') showAdminSection(activeAdminSection() || uploadForm);
       else if (location.hash === '#library') setAdminMenuActive('library');
       else if (location.hash === '#feedback-admin') setAdminMenuActive('feedback');
       else setAdminMenuActive('');
@@ -303,9 +362,14 @@
   }
   adminMenu.addEventListener('click', event => {
     const section = event.target.dataset.adminSection;
-    if (section === 'upload') showAdminSection(uploadForm);
-    if (section === 'types') showAdminSection(documentTypeManager);
-    if (section === 'users') showAdminSection(drawingUserManager);
+    if (section) {
+      // The section panels live on the admin (#upload) page. Coming from the
+      // library or the feedback inbox, switch to that page first; the section
+      // is remembered on the active button and re-shown by the hash change.
+      setAdminMenuActive(section);
+      if (location.hash === '#upload') showAdminSection(adminSectionPanels[section]);
+      else location.hash = '#upload';
+    }
     if (event.target.dataset.adminAction === 'library') { setAdminMenuActive('library'); location.hash = '#library'; }
     if (event.target.dataset.adminAction === 'feedback') { setAdminMenuActive('feedback'); location.hash = '#feedback-admin'; }
     if (event.target.dataset.adminAction === 'logout') signOut();
@@ -485,9 +549,42 @@
       return;
     }
     status.textContent = uploadResponse.ok ? 'Document uploaded successfully.' : (uploadData.error || 'Upload failed');
-    if (uploadResponse.ok) uploadForm.reset();
+    if (!uploadResponse.ok) return;
+    uploadForm.reset();
+    watchUploadIndexing(status);
   });
   async function signOut() { await api('/api/admin/logout', { method: 'POST' }); clearAdminSession(); }
+  // After an upload, poll the indexing progress endpoint so the admin sees the
+  // document being read instead of a silent gap. Stops on the next upload.
+  let indexingWatchTimer = null;
+  function watchUploadIndexing(status) {
+    if (indexingWatchTimer) window.clearInterval(indexingWatchTimer);
+    const startedAt = Date.now();
+    const render = data => {
+      const active = (data.progress || []).find(item => item.stage);
+      if (active) {
+        const pages = active.pagesTotal ? ` (page ${active.pagesDone}/${active.pagesTotal})` : '';
+        status.textContent = `Indexing for search${pages} — the document is searchable when this finishes.`;
+      } else {
+        status.textContent = 'Indexing for search…';
+      }
+    };
+    const poll = async () => {
+      try {
+        const response = await api('/api/chat/progress');
+        if (response.status === 401) { window.clearInterval(indexingWatchTimer); indexingWatchTimer = null; return; }
+        if (response.ok) render(await response.json());
+        else if (response.status === 503) { window.clearInterval(indexingWatchTimer); indexingWatchTimer = null; status.textContent = 'Document uploaded. The assistant is not configured, so it was not indexed.'; }
+      } catch { /* transient network error, keep polling */ }
+      if (Date.now() - startedAt > 600000) {
+        window.clearInterval(indexingWatchTimer);
+        indexingWatchTimer = null;
+        status.textContent = 'Document uploaded. Indexing is still running in the background.';
+      }
+    };
+    poll();
+    indexingWatchTimer = window.setInterval(poll, 2000);
+  }
   document.getElementById('logoutButton').addEventListener('click', signOut);
   loadDocumentTypes();
 window.addEventListener('hashchange', updatePageFromHash);
@@ -629,6 +726,9 @@ async function loadLibrary() {
 
   let assistantReady = false;
   let isSending = false;
+  // The last questions and answers, sent along so follow-up questions keep
+  // their context. Failed turns are dropped so the next question starts clean.
+  let chatHistory = [];
 
   const CHAT_SUGGESTIONS = [
     'What documents are available?',
@@ -643,12 +743,15 @@ async function loadLibrary() {
       .replace(/\[(\d+)\]/g, '<b class="chat-citation">[$1]</b>');
   }
 
-  function addMessage(className, text) {
+  function addMessage(className, text, { record = false } = {}) {
     const bubble = document.createElement('div');
     bubble.className = `chat-message ${className}`;
     bubble.innerHTML = formatChatText(text);
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
+    if (record && className === 'chat-message-bot' && chatHistory.length && !chatHistory[chatHistory.length - 1].answer) {
+      chatHistory[chatHistory.length - 1].answer = text;
+    }
     return bubble;
   }
 
@@ -680,9 +783,18 @@ async function loadLibrary() {
     if (!sources || !sources.length) return;
     const wrap = document.createElement('div');
     wrap.className = 'chat-sources';
-    sources.forEach(source => {
-      const label = source.documentNumber || source.title || source.source;
-      const meta = [source.documentType, source.page ? `Page ${source.page}` : '', source.source].filter(Boolean).join(' \u00b7 ');
+    // One chip per document, even when several passages came from the same PDF.
+    const uniqueSources = [];
+    const seenDocuments = new Set();
+    (sources || []).forEach(source => {
+      const key = source.documentId || source.source;
+      if (!key || seenDocuments.has(key)) return;
+      seenDocuments.add(key);
+      uniqueSources.push(source);
+    });
+    uniqueSources.forEach(source => {
+      const label = source.documentNumber || source.title || source.originalName || source.source;
+      const meta = [source.documentType, source.page ? `Page ${source.page}` : '', source.originalName || source.source].filter(Boolean).join(' \u00b7 ');
       const chip = document.createElement(source.documentId ? 'a' : 'span');
       chip.className = 'chat-source';
       if (source.documentId) {
@@ -774,6 +886,7 @@ async function loadLibrary() {
     input.value = '';
     input.style.height = 'auto';
     addMessage('chat-message-user', text);
+    chatHistory.push({ question: text, answer: '' });
     const typing = addTyping();
 
     let payload = null;
@@ -782,7 +895,7 @@ async function loadLibrary() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text })
+        body: JSON.stringify({ question: text, history: chatHistory.slice(0, -1) })
       });
       ok = response.ok;
       payload = await response.json().catch(() => null);
@@ -791,10 +904,14 @@ async function loadLibrary() {
     }
     typing.remove();
 
-    if (!payload) addMessage('chat-message-error', 'Could not reach the assistant. Check the connection and try again.');
-    else if (!ok) addMessage('chat-message-error', payload.error || 'The assistant could not answer that question.');
-    else {
-      addMessage('chat-message-bot', payload.answer || 'No answer was returned.');
+    if (!payload) {
+      addMessage('chat-message-error', 'Could not reach the assistant. Check the connection and try again.');
+      chatHistory.pop();
+    } else if (!ok) {
+      addMessage('chat-message-error', payload.error || 'The assistant could not answer that question.');
+      chatHistory.pop();
+    } else {
+      addMessage('chat-message-bot', payload.answer || 'No answer was returned.', { record: true });
       addSources(payload.sources);
     }
 
@@ -833,6 +950,48 @@ async function loadLibrary() {
   window.addEventListener('hashchange', positionToggle);
   if (window.MutationObserver) new MutationObserver(positionToggle).observe(searchSection, { attributes: true, attributeFilter: ['class'] });
   positionToggle();
+})();
+
+// Header server-status chip: load, temperature and memory from /api/system-status.
+(() => {
+  const chip = document.getElementById('serverStatus');
+  if (!chip) return;
+  const text = document.getElementById('serverStatusText');
+  let failures = 0;
+
+  const fmtUptime = seconds => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    return days ? `${days}d ${hours}h` : `${hours}h ${Math.floor((seconds % 3600) / 60)}m`;
+  };
+
+  async function refreshServerStatus() {
+    try {
+      const response = await fetch('/api/system-status');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      failures = 0;
+      chip.hidden = false;
+      chip.classList.remove('server-status-down', 'server-status-warm', 'server-status-hot');
+      const temp = status.cpuTemp;
+      // Green when idle; amber when busy or warm; red only when genuinely hot
+      // or saturated, so the dot matches how the server actually feels.
+      if ((temp !== null && temp >= 80) || status.loadPercent >= 90) chip.classList.add('server-status-hot');
+      else if ((temp !== null && temp >= 70) || status.loadPercent >= 70) chip.classList.add('server-status-warm');
+      chip.title = `Server: load ${status.load1} of ${status.cores} cores · memory ${status.memoryUsedPercent}% · up ${fmtUptime(status.uptimeSeconds)}`;
+      text.textContent = `Load ${status.loadPercent}%${temp !== null && temp !== undefined ? ` · ${temp}°C` : ''}`;
+    } catch {
+      // Stay quiet for transient hiccups; only flag the chip after a minute.
+      if (++failures >= 6) {
+        chip.hidden = false;
+        text.textContent = 'Status unavailable';
+      }
+      if (failures >= 6) chip.classList.add('server-status-down');
+    }
+  }
+
+  refreshServerStatus();
+  window.setInterval(refreshServerStatus, 2000);
 })();
  </script>
 </body>

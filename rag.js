@@ -10,6 +10,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -36,8 +37,21 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'nomic-embed-text';
 
 // A local CPU model needs a far smaller prompt and answer budget than a hosted
 // one, or the first token takes minutes to arrive.
-const LOCAL_LIMITS = { topK: 4, maxContextChars: 4000, answerMaxTokens: 400, embedBatch: 16, embedDelayMs: 0 };
-const CLOUD_LIMITS = { topK: 6, maxContextChars: 12000, answerMaxTokens: 2048, embedBatch: 24, embedDelayMs: 250 };
+const LOCAL_LIMITS = { topK: 4, maxContextChars: 4000, answerMaxTokens: 400, embedBatch: 16, embedDelayMs: 0, historyTurns: 2, historyChars: 1200 };
+const CLOUD_LIMITS = { topK: 6, maxContextChars: 12000, answerMaxTokens: 2048, embedBatch: 24, embedDelayMs: 250, historyTurns: 4, historyChars: 2400 };
+
+// OCR (scanned PDFs). Tesseract runs as WebAssembly inside the Node process, so
+// no system packages are needed. Language data downloads once from
+// tessdata.projectnaptha.com and is cached in a local folder; point
+// RAG_OCR_LANG_PATH at a folder holding <lang>.traineddata.gz for fully
+// offline servers.
+const DEFAULT_OCR_LANGS = 'eng';
+const OCR_CACHE_DIR = path.join(__dirname, '.ocr-cache');
+const OCR_PAGE_TARGET_WIDTH = 1700;
+// A cap on the rendered page width keeps big scanned drawings from creating a
+// bitmap large enough to exhaust the process memory.
+const PDF_RENDER_MAX_WIDTH = 4000;
+const OCR_MAX_PAGES = 40;
 
 const SYSTEM_INSTRUCTION = [
   'You are the Rail Docs assistant for an Indian Railways engineering document library.',
@@ -46,13 +60,94 @@ const SYSTEM_INSTRUCTION = [
   'Rules:',
   '1. Use only facts that appear in the context passages. Never use outside knowledge, and never guess.',
   '2. If the context does not contain the answer, reply that the library does not appear to cover it and list the closest related documents you did find. Do not invent document numbers, dates or values.',
-  '3. Cite the passages you use with their bracketed numbers, for example [1] or [2][3].',
-  '4. Prefer exact document numbers, figures and technical wording from the passages.',
-  '5. If the passages disagree, say so rather than picking one silently.',
-  '6. Answer in the same language the question was asked in.',
-  '7. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back.',
-  '8. When you mention a document, use its document number and caption from the passage header.'
+  '3. Some passages are unreadable because of broken OCR (random symbols instead of words). Never quote them and never infer an answer from them; ignore them unless another passage answers the question.',
+  '4. Cite the passages you use with their bracketed numbers, for example [1] or [2][3].',
+  '5. Prefer exact document numbers, figures and technical wording from the passages.',
+  '6. If the passages disagree, say so rather than picking one silently.',
+  '7. Answer in the same language the question was asked in.',
+  '8. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back.',
+  '9. When you mention a document, use its document number and caption from the passage header. Never mention file names in your answer; if a passage has no document number, refer to it by its caption.',
+  '10. The conversation history shows what was discussed earlier. Use it to understand short follow-up questions, but answer only from the passages, never from memory of the earlier conversation.'
 ].join('\n');
+
+/**
+ * Trims the stored conversation to the last few turns within a character
+ * budget, so a long session cannot inflate the prompt on the small local
+ * models. Returns '' when there is nothing to include.
+ */
+function historyBlock(history, config) {
+  if (!Array.isArray(history) || !history.length) return '';
+  const wanted = [];
+  let used = 0;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const turn = history[index];
+    const question = String(turn?.question || '').slice(0, 500).trim();
+    const answer = String(turn?.answer || '').slice(0, 800).trim();
+    if (!question) continue;
+    const line = `Q: ${question}\nA: ${answer || '(no answer)'}`;
+    if (used + line.length > config.historyChars && wanted.length) break;
+    used += line.length;
+    wanted.unshift(line);
+    if (wanted.length >= config.historyTurns) break;
+  }
+  return wanted.join('\n\n');
+}
+
+/**
+ * Follow-up questions such as "and its torque?" are meaningless on their own,
+ * so retrieval searches for a rewritten, self-contained question instead. The
+ * rewrite is heuristic and free: the previous question names the subject, and
+ * a short follow-up keeps it in front. Only the previous *question* is ever
+ * used — never the previous answer, whose first sentence is often a refusal
+ * ("The library does not appear to cover it...") or boilerplate, and one
+ * poisoned search string made every following question retrieve junk.
+ *
+ * Short questions are common and self-contained ("What is VCB?"), so a bare
+ * length rule never rewrites on its own; the previous question only becomes
+ * part of the search when the follow-up actually leans on it with a dangling
+ * reference.
+ */
+function standaloneQuestion(question, history) {
+  const previous = Array.isArray(history) ? history[history.length - 1] : null;
+  const priorQuestion = String(previous?.question || '').trim();
+  if (!priorQuestion || priorQuestion === question) return question;
+
+  // Only rewrite when the question actually leans on the previous turn: it
+  // opens with a dangling reference, or mentions one mid-sentence. Short
+  // fragments like "and its torque?" fall in the first group.
+  const needsContext = /^(and|also|its|it's|it\b|they|their|them|that\b|this\b|those|these|same|so\b|then|what about|how about)\b/i.test(question)
+    || (/\b(it|its|itself|their|them|same|above|earlier|aforementioned)\b/i.test(question) && question.length < 150);
+  if (!needsContext) return question;
+
+  return `${priorQuestion} — ${question}`;
+}
+
+/**
+ * Builds an FTS5 MATCH expression from a question. Terms are OR-ed so a passage
+ * mentioning most of the asked things outranks one mentioning a single word;
+ * stopwords are dropped, and numbers (document numbers, values like 0003 or
+ * 260) are kept verbatim because they are the strongest signal. Two-letter
+ * terms are kept too: railway jargon is full of short acronyms (TM, BP, CC)
+ * that stopwords do not cover. Returns '' when the question has nothing worth
+ * a keyword lookup.
+ */
+function keywordQueryFromQuestion(question) {
+  const stopWords = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'is', 'are', 'was', 'were', 'be', 'been', 'and', 'or', 'what', 'which', 'who', 'whom', 'how', 'why', 'when', 'where', 'does', 'do', 'did', 'can', 'could', 'should', 'would', 'will', 'shall', 'may', 'might', 'must', 'give', 'tell', 'show', 'list', 'find', 'any', 'its', 'it', 'his', 'her', 'their', 'there', 'that', 'this', 'these', 'those', 'from', 'with', 'as', 'at', 'by', 'per', 'not', 'no', 'yes', 'about', 'into', 'over', 'under', 'please']);
+  const terms = [];
+  const seen = new Set();
+  for (const raw of String(question || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    const term = raw.trim();
+    if (!term || term.length < 2 || seen.has(term)) continue;
+    if (!/\d/.test(term) && stopWords.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
+    if (terms.length >= 12) break;
+  }
+  if (!terms.length) return '';
+  // Double quotes are escaped by doubling; FTS5 treats a quoted token as a
+  // plain string, so punctuation-free terms never form operators.
+  return terms.map(term => `"${term}"`).join(' OR ');
+}
 
 function readNumber(value, fallback) {
   const parsed = Number(value);
@@ -63,6 +158,7 @@ function getConfig() {
   const requested = String(process.env.AI_PROVIDER || '').trim().toLowerCase();
   const provider = requested === 'gemini' || requested === 'ollama' ? requested : 'ollama';
   const limits = provider === 'ollama' ? LOCAL_LIMITS : CLOUD_LIMITS;
+  const topK = Math.min(readNumber(process.env.RAG_TOP_K, limits.topK), 20);
 
   return {
     provider,
@@ -87,7 +183,7 @@ function getConfig() {
     chatModel: process.env.GEMINI_CHAT_MODEL || CHAT_MODEL_FALLBACKS[0],
 
     // Shared
-    topK: Math.min(readNumber(process.env.RAG_TOP_K, limits.topK), 20),
+    topK,
     maxContextChars: readNumber(process.env.RAG_MAX_CONTEXT_CHARS, limits.maxContextChars),
     minScore: Number.isFinite(Number(process.env.RAG_MIN_SCORE)) ? Number(process.env.RAG_MIN_SCORE) : 0.3,
     chunkChars: readNumber(process.env.RAG_CHUNK_CHARS, 1400),
@@ -97,7 +193,28 @@ function getConfig() {
     rescanIntervalMs: readNumber(process.env.RAG_RESCAN_INTERVAL_MS, 5 * 60 * 1000),
     maxCharsPerFile: readNumber(process.env.RAG_MAX_CHARS_PER_FILE, 1500000),
     maxChunksPerFile: readNumber(process.env.RAG_MAX_CHUNKS_PER_FILE, 500),
-    answerMaxTokens: readNumber(process.env.RAG_ANSWER_MAX_TOKENS, limits.answerMaxTokens)
+    answerMaxTokens: readNumber(process.env.RAG_ANSWER_MAX_TOKENS, limits.answerMaxTokens),
+    historyTurns: Math.min(readNumber(process.env.RAG_HISTORY_TURNS, limits.historyTurns), 10),
+    historyChars: readNumber(process.env.RAG_HISTORY_CHARS, limits.historyChars),
+    ocrEnabled: process.env.RAG_OCR !== '0',
+    ocrLangs: (process.env.RAG_OCR_LANGS || DEFAULT_OCR_LANGS).split(',').map(part => part.trim()).filter(Boolean),
+    ocrLangPath: process.env.RAG_OCR_LANG_PATH || '',
+    ocrCacheDir: process.env.RAG_OCR_CACHE_DIR || OCR_CACHE_DIR,
+    ocrMaxPages: Math.min(readNumber(process.env.RAG_OCR_MAX_PAGES, OCR_MAX_PAGES), 200),
+    ocrDpiScale: Number.isFinite(Number(process.env.RAG_OCR_DPI_SCALE)) ? Math.min(Math.max(Number(process.env.RAG_OCR_DPI_SCALE), 1), 3) : 2,
+    // Hybrid retrieval. The keyword half uses SQLite FTS5 (bm25). Weights are a
+    // blend: vectors carry meaning, keywords carry exact terms like document
+    // numbers and named limits, and bm25 rewards short passages that mention
+    // what was asked several times.
+    keywordWeight: Number.isFinite(Number(process.env.RAG_KEYWORD_WEIGHT)) ? Math.max(Number(process.env.RAG_KEYWORD_WEIGHT), 0) : 0.5,
+    vectorWeight: Number.isFinite(Number(process.env.RAG_VECTOR_WEIGHT)) ? Math.max(Number(process.env.RAG_VECTOR_WEIGHT), 0) : 0.5,
+    // Passages scoring far below the best hit are noise that the model never
+    // cites, but they still show up as suggested documents (e.g. a wheel-wear
+    // sheet suggested for a "tm bellow" question). Keep only passages within
+    // this ratio of the best score.
+    scoreGapRatio: Number.isFinite(Number(process.env.RAG_SCORE_GAP_RATIO)) ? Math.min(Math.max(Number(process.env.RAG_SCORE_GAP_RATIO), 0), 1) : 0.55,
+    perDocumentLimit: Math.max(1, Math.min(readNumber(process.env.RAG_PER_DOC_LIMIT, 3), topK)),
+    retrievePool: Math.max(topK, Math.min(readNumber(process.env.RAG_RETRIEVE_POOL, topK * 4), 40))
   };
 }
 
@@ -157,6 +274,42 @@ function loadPdfjs() {
   return pdfjsPromise;
 }
 
+// Canvas for pdf.js to draw on. @napi-rs/canvas ships prebuilt binaries, so it
+// works in the Docker image without any system packages. pdf.js also uses this
+// factory for its own scratch canvases (soft masks, patterns) while rendering.
+let napiCanvasPromise = null;
+
+function loadNapiCanvas() {
+  if (!napiCanvasPromise) {
+    napiCanvasPromise = import('@napi-rs/canvas').catch(error => {
+      napiCanvasPromise = null;
+      throw error;
+    });
+  }
+  return napiCanvasPromise;
+}
+
+async function createCanvasFactory() {
+  const canvasModule = await loadNapiCanvas();
+  return {
+    create(width, height) {
+      const canvas = canvasModule.createCanvas(Math.max(1, width), Math.max(1, height));
+      return { canvas, context: canvas.getContext('2d') };
+    },
+    reset(canvasAndContext, width, height) {
+      canvasAndContext.canvas.width = Math.max(1, width);
+      canvasAndContext.canvas.height = Math.max(1, height);
+    },
+    destroy(canvasAndContext) {
+      if (canvasAndContext?.canvas && typeof canvasAndContext.canvas.dispose === 'function') canvasAndContext.canvas.dispose();
+      if (canvasAndContext) {
+        canvasAndContext.canvas = null;
+        canvasAndContext.context = null;
+      }
+    }
+  };
+}
+
 function normalizeExtractedText(value) {
   return String(value || '')
     .replace(/\r\n?/g, '\n')
@@ -179,16 +332,32 @@ async function teardownPdf(loadingTask, pdfDocument) {
 }
 
 /**
- * Reads every page of a PDF and returns the extracted text per page.
- * Scanned PDFs hold no text layer and come back empty; the caller reports that.
+ * Normalise any accepted source (path, Buffer, Uint8Array) into a plain
+ * Uint8Array. pdf.js takes ownership of the ArrayBuffer it is handed and can
+ * detach it, so it always gets its own copy and the caller's bytes stay valid
+ * for reuse by the next pass.
  */
-async function extractPdfText(filePath, { maxChars = getConfig().maxCharsPerFile } = {}) {
+function toPdfBytes(source) {
+  const buffer = Buffer.isBuffer(source) ? source
+    : source instanceof Uint8Array ? Buffer.from(source.buffer, source.byteOffset, source.byteLength)
+    : fs.readFileSync(source);
+  return new Uint8Array(buffer);
+}
+
+/**
+ * Opens a PDF for text extraction or rendering. Passing already-read bytes
+ * avoids a second read of the file, which matters for the large PDFs this
+ * library accepts: big files are read once and used for both passes.
+ */
+async function openPdfDocument(source) {
   const pdfjs = await loadPdfjs();
   const paths = getPdfjsPaths();
-  const data = new Uint8Array(fs.readFileSync(filePath));
+  const canvasFactory = await createCanvasFactory();
+  const data = toPdfBytes(source);
 
-  const loadingTask = pdfjs.getDocument({
+  return pdfjs.getDocument({
     data,
+    canvasFactory,
     cMapUrl: paths.cmaps,
     cMapPacked: true,
     standardFontDataUrl: paths.standardFontData,
@@ -199,6 +368,16 @@ async function extractPdfText(filePath, { maxChars = getConfig().maxCharsPerFile
     useWorkerFetch: false,
     verbosity: 0
   });
+}
+
+/**
+ * Reads every page of a PDF and returns the extracted text per page.
+ * Scanned PDFs hold no text layer and come back empty; the caller reports that.
+ * A page that cannot be read is skipped, so one bad page no longer hides the
+ * text of every page after it.
+ */
+async function extractPdfText(filePath, { maxChars = getConfig().maxCharsPerFile, bytes = null } = {}) {
+  const loadingTask = await openPdfDocument(bytes || filePath);
 
   const pages = [];
   let totalChars = 0;
@@ -207,22 +386,26 @@ async function extractPdfText(filePath, { maxChars = getConfig().maxCharsPerFile
     const pdfDocument = await loadingTask.promise;
     pageCount = pdfDocument.numPages;
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-      const page = await pdfDocument.getPage(pageNumber);
       try {
-        const content = await page.getTextContent();
-        let pageText = '';
-        for (const item of content.items) {
-          if (typeof item.str !== 'string' || !item.str) continue;
-          pageText += item.str;
-          if (item.hasEOL) pageText += '\n';
+        const page = await pdfDocument.getPage(pageNumber);
+        try {
+          const content = await page.getTextContent();
+          let pageText = '';
+          for (const item of content.items) {
+            if (typeof item.str !== 'string' || !item.str) continue;
+            pageText += item.str;
+            if (item.hasEOL) pageText += '\n';
+          }
+          const cleaned = normalizeExtractedText(pageText);
+          if (cleaned) {
+            pages.push({ page: pageNumber, text: cleaned });
+            totalChars += cleaned.length;
+          }
+        } finally {
+          if (typeof page.cleanup === 'function') page.cleanup();
         }
-        const cleaned = normalizeExtractedText(pageText);
-        if (cleaned) {
-          pages.push({ page: pageNumber, text: cleaned });
-          totalChars += cleaned.length;
-        }
-      } finally {
-        if (typeof page.cleanup === 'function') page.cleanup();
+      } catch (error) {
+        console.warn(`[rag] page ${pageNumber} of ${filePath} could not be read: ${error.message}`);
       }
       if (totalChars >= maxChars) break;
     }
@@ -234,11 +417,226 @@ async function extractPdfText(filePath, { maxChars = getConfig().maxCharsPerFile
 }
 
 /* ------------------------------------------------------------------ *
+ * OCR for scanned PDFs
+ * ------------------------------------------------------------------ */
+
+// tesseract.js is only loaded when a scanned PDF shows up, so normal
+// deployments never pay its start up cost.
+let tesseractPromise = null;
+
+function loadTesseract() {
+  if (!tesseractPromise) {
+    tesseractPromise = import('tesseract.js').catch(error => {
+      tesseractPromise = null;
+      throw error;
+    });
+  }
+  return tesseractPromise;
+}
+
+// One Tesseract worker per core through a scheduler, so indexing a batch of
+// scans uses the whole CPU instead of a single core. Workers are pooled and
+// stay warm between files: initialising one costs seconds, which would
+// otherwise be paid for every PDF.
+let ocrSchedulerPromise = null;
+let ocrSchedulerKey = '';
+
+function ocrWorkerCount(pageCount) {
+  const configured = readNumber(process.env.RAG_OCR_WORKERS, 0);
+  const cores = Math.max(1, os.cpus().length - 1); // leave one core for the app itself
+  return Math.max(1, Math.min(configured || cores, cores, pageCount || 1, 8));
+}
+
+async function getOcrScheduler(config, pageCount) {
+  const langs = config.ocrLangs.join('+') || DEFAULT_OCR_LANGS;
+  const key = `${langs}|${config.ocrLangPath}|${config.ocrCacheDir}`;
+  if (ocrSchedulerPromise && ocrSchedulerKey !== key) {
+    const stale = ocrSchedulerPromise;
+    ocrSchedulerPromise = null;
+    try {
+      const { scheduler } = await stale;
+      await scheduler.terminate();
+    } catch { /* ignore */ }
+  }
+  if (!ocrSchedulerPromise) {
+    ocrSchedulerKey = key;
+    ocrSchedulerPromise = (async () => {
+      const { createScheduler, createWorker } = await loadTesseract();
+      const scheduler = createScheduler();
+      const options = {
+        cachePath: config.ocrCacheDir,
+        logger: () => {} // keep recognition progress out of the Docker logs
+      };
+      if (config.ocrLangPath) options.langPath = config.ocrLangPath;
+      fs.mkdirSync(config.ocrCacheDir, { recursive: true });
+      const workerCount = ocrWorkerCount(pageCount);
+      await Promise.all(Array.from({ length: workerCount }, () =>
+        createWorker(langs, 1, options).then(worker => scheduler.addWorker(worker))));
+      return { scheduler, workerCount };
+    })();
+    ocrSchedulerPromise.catch(() => {
+      if (ocrSchedulerKey === key) ocrSchedulerPromise = null;
+    });
+  }
+  return ocrSchedulerPromise;
+}
+
+async function stopOcrScheduler() {
+  if (!ocrSchedulerPromise) return;
+  const pending = ocrSchedulerPromise;
+  ocrSchedulerPromise = null;
+  try {
+    const { scheduler } = await pending;
+    await scheduler.terminate();
+  } catch { /* ignore */ }
+}
+
+function withOcrWorkers(config, pageCount, fn) {
+  return getOcrScheduler(config, pageCount).then(({ scheduler }) =>
+    // recognise(image, options, output, jobId) - the explicit defaults keep the
+    // scheduler's internal job id from landing in the options slot.
+    fn(image => scheduler.addJob('recognize', image, {}, { text: true })));
+}
+
+/** Renders one PDF page into an RGB canvas sized for OCR. */
+async function renderPdfPage(pdfDocument, pageNumber, scale) {
+  const canvasModule = await loadNapiCanvas();
+  const page = await pdfDocument.getPage(pageNumber);
+  try {
+    const full = page.getViewport({ scale });
+    // Wide drawings are scaled down to stay inside the bitmap budget; Tesseract
+    // still reads the capped size well.
+    const scaleDown = Math.min(1, PDF_RENDER_MAX_WIDTH / Math.max(1, full.width));
+    const viewport = scaleDown < 1 ? page.getViewport({ scale: scale * scaleDown }) : full;
+    const canvas = canvasModule.createCanvas(Math.max(1, Math.floor(viewport.width)), Math.max(1, Math.floor(viewport.height)));
+    const context = canvas.getContext('2d');
+    context.fillStyle = 'white';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: context, viewport, background: 'white' }).promise;
+    return canvas;
+  } finally {
+    if (typeof page.cleanup === 'function') page.cleanup();
+  }
+}
+
+/**
+ * Rasterises pages with pdf.js and reads them back with Tesseract. Returns the
+ * same shape as extractPdfText, plus `ocrPages`: the page numbers that were
+ * read. `onlyPages` restricts the run to the given page numbers, which is how
+ * the scanned pages inside a mostly text PDF are read without repeating the
+ * rest. A page that fails is skipped, not fatal.
+ */
+async function ocrPdfPages(filePath, { maxChars = getConfig().maxCharsPerFile, bytes = null, onlyPages = null } = {}) {
+  const config = getConfig();
+  if (!config.ocrEnabled) throw new Error('OCR is disabled (RAG_OCR=0)');
+
+  const loadingTask = await openPdfDocument(bytes || filePath);
+
+  const pages = [];
+  let totalChars = 0;
+  let pageCount = 0;
+  let pdfDocument = null;
+  try {
+    pdfDocument = await loadingTask.promise;
+    pageCount = pdfDocument.numPages;
+
+    let wanted = onlyPages && onlyPages.length
+      ? [...new Set(onlyPages)].filter(pageNumber => pageNumber >= 1 && pageNumber <= pdfDocument.numPages)
+      : null;
+    const pageLimit = Math.min(wanted ? wanted.length : pdfDocument.numPages, config.ocrMaxPages);
+    if (!wanted && pdfDocument.numPages > pageLimit) {
+      console.warn(`[rag] OCR: only the first ${pageLimit} of ${pdfDocument.numPages} pages will be read`);
+    }
+    wanted = wanted ? wanted.slice(0, pageLimit) : Array.from({ length: pageLimit }, (_, index) => index + 1);
+
+    pages.push(...await withOcrWorkers(config, wanted.length, async recognize => {
+      // Pages are rendered on this thread and recognised on the worker pool, so
+      // several pages are in flight at once and all cores stay busy.
+      const jobs = wanted.map(pageNumber => (async () => {
+        try {
+          const canvas = await renderPdfPage(pdfDocument, pageNumber, config.ocrDpiScale);
+          let image;
+          try {
+            // tesseract.js in Node wants a Buffer, not a canvas object.
+            image = canvas.toBuffer('image/png');
+          } finally {
+            // @napi-rs/canvas exposes a native bitmap, so free it promptly.
+            if (typeof canvas?.dispose === 'function') canvas.dispose();
+          }
+          const { data: { text } } = await recognize(image);
+          const cleaned = normalizeExtractedText(text);
+          if (cleaned) {
+            totalChars += cleaned.length;
+            return { page: pageNumber, text: cleaned };
+          }
+          return null;
+        } catch (error) {
+          console.warn(`[rag] OCR: page ${pageNumber} of ${filePath} failed: ${error.message}`);
+          return null;
+        }
+      })());
+      const settled = await Promise.all(jobs);
+      return settled.filter(Boolean);
+    }));
+  } finally {
+    await teardownPdf(loadingTask, pdfDocument);
+  }
+
+  return { pageCount, pages, totalChars, ocr: true, mixed: Boolean(onlyPages && onlyPages.length), ocrPages: pages.map(page => page.page) };
+}
+
+/**
+ * OCR pass for PDFs that already carry some native text: only the pages with
+ * no text layer are rasterised and read, so scanned pages inside a mostly text
+ * PDF are recovered instead of silently lost. Null when nothing is missing.
+ */
+async function ocrMissingTextPages(filePath, extracted, options = {}) {
+  if (!getConfig().ocrEnabled) return null;
+  const haveText = new Set(extracted.pages.map(page => page.page));
+  const missing = [];
+  for (let pageNumber = 1; pageNumber <= extracted.pageCount; pageNumber += 1) {
+    if (!haveText.has(pageNumber)) missing.push(pageNumber);
+  }
+  if (!missing.length) return null;
+  return ocrPdfPages(filePath, { ...options, onlyPages: missing });
+}
+
+/* ------------------------------------------------------------------ *
  * Chunking
  * ------------------------------------------------------------------ */
 
 function collapse(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// OCR on poor scans turns a page into symbol soup ("4) A =F न > iv) ¢ eC").
+// That junk embeds poorly but still steals bm25 keyword matches, which is how
+// a cover page displaced the real answer page and the chat cited the wrong
+// page. Two signals separate it from real content in any supported script
+// (Latin, Devanagari, Arabic): junk words are mostly punctuation and lone
+// characters (low readable-word ratio), and OCR noise splits words into
+// letter debris (very short average word). Real pages pass both easily; the
+// junk page this defends against scored 0.65 / 1.7.
+const MIN_READABLE_RATIO = 0.6;
+const MIN_MEAN_WORD_LENGTH = 3;
+
+function readableRatio(text) {
+  let counted = 0;
+  let good = 0;
+  for (const word of String(text || '').toLowerCase().split(/\s+/)) {
+    if (word.length < 2) continue;
+    counted += 1;
+    const letters = (word.match(/[a-z0-9\u0900-\u097F\u0600-\u06FF]/g) || []).length;
+    if (letters * 10 >= word.length * 6) good += 1;
+  }
+  return counted ? good / counted : 0;
+}
+
+function isReadableText(text) {
+  const words = String(text || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const meanLength = words.reduce((sum, word) => sum + word.length, 0) / words.length;
+  return readableRatio(text) >= MIN_READABLE_RATIO && meanLength >= MIN_MEAN_WORD_LENGTH;
 }
 
 function hardSplit(text, maxChars) {
@@ -286,6 +684,9 @@ function buildChunks(pages, options = {}) {
   for (const page of pages) {
     for (const content of chunkPageText(page.text, { maxChars, overlap })) {
       if (chunks.length >= maxChunks) return chunks;
+      // Unreadable chunks never enter the index, so they can neither be
+      // retrieved nor cited with a wrong page number later.
+      if (!isReadableText(content)) continue;
       chunks.push({ page: page.page, content });
     }
   }
@@ -495,7 +896,39 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
     CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(source);
     CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON rag_chunks(document_id);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+      content,
+      tokenize = 'porter unicode61'
+      , content='rag_chunks', content_rowid='id'
+    );
   `);
+
+  // External-content FTS keeps a copy of nothing but the index; it must be
+  // filled once for tables that predate it and kept in sync by the triggers
+  // from then on. Rebuilding on every boot would re-tokenise the whole
+  // library, so only rebuild when chunks exist but the index is empty.
+  try {
+    const chunkCount = db.prepare('SELECT COUNT(*) AS n FROM rag_chunks').get().n;
+    const ftsCount = db.prepare('SELECT COUNT(*) AS n FROM rag_chunks_fts').get().n;
+    if (chunkCount > 0 && ftsCount === 0) {
+      db.exec("INSERT INTO rag_chunks_fts(rag_chunks_fts) VALUES ('rebuild')");
+    }
+  } catch (error) {
+    if (!/no such table/i.test(error.message)) throw error;
+  }
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN
+        INSERT INTO rag_chunks_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN
+        INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      END;
+    `);
+  } catch (error) {
+    if (!/no such table/i.test(error.message)) throw error;
+  }
 
   // Added after the first release, so existing databases need the column put in.
   try {
@@ -503,10 +936,16 @@ function createRag({ db, uploadDirectory, logger = console }) {
   } catch (error) {
     if (!error.message.includes('duplicate column name')) throw error;
   }
+  // How many pages were recovered by OCR (0 = the PDF had a native text layer).
+  try {
+    db.exec('ALTER TABLE rag_documents ADD COLUMN ocr_pages INTEGER NOT NULL DEFAULT 0');
+  } catch (error) {
+    if (!error.message.includes('duplicate column name')) throw error;
+  }
 
   const statements = {
     getDocumentMeta: db.prepare(`
-      SELECT d.id, d.caption, d.document_number, d.document_type,
+      SELECT d.id, d.caption, d.document_number, d.document_type, d.original_name,
              COALESCE(dt.requires_login, 0) AS requires_login
       FROM documents d
       LEFT JOIN document_types dt ON dt.name = d.document_type
@@ -514,9 +953,15 @@ function createRag({ db, uploadDirectory, logger = console }) {
     `),
     getIndexedDocument: db.prepare('SELECT * FROM rag_documents WHERE source = ?'),
     listIndexedSources: db.prepare('SELECT source, size, modified_ms, status FROM rag_documents'),
+    // Problem files first, then OCR-rescued scans, then the rest alphabetically.
+    listFiles: db.prepare(`
+      SELECT source, document_number, title, page_count, chunk_count, status, ocr_pages AS ocrPages, error, indexed_at AS indexedAt
+      FROM rag_documents
+      ORDER BY status <> 'indexed', ocr_pages > 0 DESC, source COLLATE NOCASE
+    `),
     upsertDocument: db.prepare(`
-      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, indexed_at)
-      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, CURRENT_TIMESTAMP)
+      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, indexed_at)
+      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages, CURRENT_TIMESTAMP)
       ON CONFLICT(source) DO UPDATE SET
         document_id = excluded.document_id,
         title = excluded.title,
@@ -530,6 +975,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
         status = excluded.status,
         error = excluded.error,
         embedding_model = excluded.embedding_model,
+        ocr_pages = excluded.ocr_pages,
         indexed_at = CURRENT_TIMESTAMP
     `),
     deleteChunks: db.prepare('DELETE FROM rag_chunks WHERE source = ?'),
@@ -539,12 +985,21 @@ function createRag({ db, uploadDirectory, logger = console }) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `),
     loadVectors: db.prepare('SELECT id, source, document_id, page, embedding, dimensions FROM rag_chunks'),
+    // bm25() is negative (more relevant = more negative), so it sorts ascending.
+    searchKeywords: db.prepare(`
+      SELECT rowid AS id, bm25(rag_chunks_fts, 8.0) AS rank
+      FROM rag_chunks_fts
+      WHERE rag_chunks_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `),
     fetchChunks: db.prepare('SELECT id, source, document_id, page, content FROM rag_chunks WHERE id IN (SELECT value FROM json_each(?))'),
     counts: db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM rag_documents WHERE status = 'indexed' AND chunk_count > 0) AS indexed_files,
         (SELECT COUNT(*) FROM rag_documents WHERE status = 'error' OR status = 'no-text') AS problem_files,
         (SELECT COUNT(*) FROM rag_documents WHERE status = 'restricted') AS restricted_files,
+        (SELECT COUNT(*) FROM rag_documents WHERE ocr_pages > 0) AS ocr_files,
         (SELECT COUNT(*) FROM rag_chunks) AS chunk_count,
         (SELECT MAX(indexed_at) FROM rag_documents WHERE status = 'indexed') AS last_indexed_at
     `)
@@ -600,7 +1055,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
         content_chars: 0,
         status: 'restricted',
         error: 'Skipped: this document type requires a login',
-        embedding_model: ''
+        embedding_model: '',
+        ocr_pages: 0
       });
       invalidateCache();
       return { source, status: 'restricted' };
@@ -620,8 +1076,40 @@ function createRag({ db, uploadDirectory, logger = console }) {
       return { source, status: 'unchanged' };
     }
 
-    const { pages, totalChars, pageCount } = await extractPdfText(filePath);
-    const chunks = buildChunks(pages);
+    // Large files are read once: the same bytes feed both the text layer pass
+    // and, when needed, the OCR pass.
+    const bytes = fs.readFileSync(filePath);
+
+    const { pages: nativePages, totalChars: nativeChars, pageCount } = await extractPdfText(filePath, { bytes });
+    let pages = nativePages;
+    let totalChars = nativeChars;
+
+    // Pages with no text layer are read with OCR: whole scanned PDFs have every
+    // page missing, while hybrid PDFs (text pages mixed with scanned pages, the
+    // norm in big drawings) only need their scanned pages recovered.
+    let ocrError = '';
+    let ocrPages = 0;
+    if (getConfig().ocrEnabled) {
+      try {
+        const ocr = totalChars
+          ? await ocrMissingTextPages(filePath, { pages, pageCount }, { bytes })
+          : await ocrPdfPages(filePath, { bytes });
+        if (ocr && ocr.pages.length) {
+          pages = totalChars
+            ? [...pages, ...ocr.pages].sort((left, right) => left.page - right.page)
+            : ocr.pages;
+          totalChars += ocr.totalChars;
+          ocrPages = ocr.pages.length;
+          logger.log(`[rag] ${source}: OCR recovered ${ocrPages} page(s) of text`);
+        }
+      } catch (error) {
+        ocrError = error.message;
+        logger.warn(`[rag] ${source}: OCR failed: ${error.message}`);
+      }
+    }
+
+    let chunks = buildChunks(pages);
+
     const base = {
       source,
       document_id: metadata?.id || null,
@@ -632,12 +1120,16 @@ function createRag({ db, uploadDirectory, logger = console }) {
       modified_ms: Math.round(fileStat.mtimeMs),
       page_count: pageCount,
       content_chars: totalChars,
-      embedding_model: modelId
+      embedding_model: modelId,
+      ocr_pages: ocrPages
     };
 
     if (!chunks.length) {
       statements.deleteChunks.run(source);
-      statements.upsertDocument.run({ ...base, chunk_count: 0, status: 'no-text', error: 'No selectable text found. The PDF is probably a scan.' });
+      const reason = ocrError
+        ? `Scanned PDF, and OCR could not read it: ${ocrError}`
+        : 'No readable text found, even after OCR. The scan quality is probably too low.';
+      statements.upsertDocument.run({ ...base, chunk_count: 0, status: 'no-text', error: reason });
       invalidateCache();
       logger.warn(`[rag] ${source}: no extractable text (scanned PDF?)`);
       return { source, status: 'no-text' };
@@ -819,28 +1311,62 @@ function createRag({ db, uploadDirectory, logger = console }) {
     return entries;
   }
 
-  function retrievalCandidates(questionVector, topK, minScore) {
+  function retrievalCandidates(questionVector, topK, minScore, keywordQuery = '') {
+    const config = getConfig();
     const entries = loadVectorCache();
-    const scored = [];
+
+    // Vector pass: semantic similarity, normalised to 0..1 (cosine of unit
+    // vectors runs roughly 0.3..0.9 for useful matches, so scale and clamp).
+    const vectorScores = new Map();
     for (const entry of entries) {
       const score = dotProduct(questionVector, entry.vector);
-      if (score >= minScore) scored.push({ ...entry, score });
+      if (score >= minScore) vectorScores.set(entry.id, Math.min(1, Math.max(0, (score - minScore) / (1 - minScore || 1))));
     }
-    scored.sort((left, right) => right.score - left.score);
 
-    // Keep the best chunk per document first, then top up with nearby passages.
+    // Keyword pass: FTS5 bm25 finds the exact terms — document numbers, named
+    // quantities, part names — that embeddings routinely rank below merely
+    // similar-looking text. bm25 is negative-by-relevance; scores are normalised
+    // relative to the best hit (1.0) so they are comparable with vector scores
+    // regardless of how large the raw bm25 magnitudes are.
+    const keywordScores = new Map();
+    if (keywordQuery) {
+      try {
+        const rows = statements.searchKeywords.all(keywordQuery, config.retrievePool);
+        const best = rows.length ? rows[0].rank : 0; // most negative = most relevant
+        for (const row of rows) {
+          keywordScores.set(row.id, best < 0 ? Math.min(1, row.rank / best) : 1);
+        }
+      } catch (error) {
+        logger.warn(`[rag] keyword search skipped: ${error.message}`);
+      }
+    }
+
+    // Fuse: weighted sum of the two normalised signals. A passage strong in
+    // both (the real answer) beats a passage that merely sounds similar.
+    const fused = new Map();
+    for (const [id, score] of vectorScores) fused.set(id, score * config.vectorWeight);
+    for (const [id, score] of keywordScores) fused.set(id, (fused.get(id) || 0) + score * config.keywordWeight);
+
+    const scored = [...fused.entries()]
+      .map(([id, score]) => {
+        const entry = entries.find(candidate => candidate.id === id);
+        return entry ? { ...entry, score } : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score);
+
+    // Strongest passages first, but never more than perDocumentLimit passages
+    // from one document. Unlike the old forced diversity, the 2nd-best chunk of
+    // the document that actually holds the answer still makes the cut — the
+    // model then cites a page that really contains what was asked.
     const best = [];
-    const seenSources = new Set();
+    const perSource = new Map();
     for (const entry of scored) {
-      if (seenSources.has(entry.source)) continue;
-      seenSources.add(entry.source);
+      const used = perSource.get(entry.source) || 0;
+      if (used >= config.perDocumentLimit) continue;
+      perSource.set(entry.source, used + 1);
       best.push(entry);
       if (best.length >= topK) return best;
-    }
-    for (const entry of scored) {
-      if (best.includes(entry)) continue;
-      best.push(entry);
-      if (best.length >= topK) break;
     }
     return best;
   }
@@ -849,7 +1375,11 @@ function createRag({ db, uploadDirectory, logger = console }) {
     const config = getConfig();
     const [questionVector] = await embedTexts([question], 'RETRIEVAL_QUERY');
     if (!questionVector) return [];
-    const matches = retrievalCandidates(questionVector, topK, config.minScore);
+    const keywordQuery = keywordQueryFromQuestion(question);
+    // Overshoot the cap, then drop unreadable (OCR junk) passages before the
+    // final cut, so junk still sitting in a stale index cannot crowd real
+    // passages out of the top results.
+    const matches = retrievalCandidates(questionVector, topK * 2, config.minScore, keywordQuery);
     if (!matches.length) return [];
     const rows = statements.fetchChunks.all(JSON.stringify(matches.map(match => match.id)));
     const byId = new Map(rows.map(row => [row.id, row]));
@@ -867,15 +1397,22 @@ function createRag({ db, uploadDirectory, logger = console }) {
           documentId: metadata?.id || row.document_id || null,
           documentNumber: metadata?.document_number || '',
           documentType: metadata?.document_type || '',
+          originalName: metadata?.original_name || row.source,
           title: metadata?.caption || row.source
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(source => isReadableText(source.content))
+      // Filler cut: a passage scoring far below the best hit is noise that the
+      // answer never cites, but it would still be listed as a suggested
+      // document in the UI.
+      .filter(source => source.score >= (matches[0]?.score || 0) * config.scoreGapRatio)
+      .slice(0, topK);
   }
 
   /* ---------------- answer generation ---------------- */
 
-  function buildPrompt(question, sources) {
+  function buildPrompt(question, sources, history = '') {
     const config = getConfig();
     const blocks = [];
     let used = 0;
@@ -884,7 +1421,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
       const heading = [
         `[${index + 1}]`,
         source.documentNumber ? `Document number: ${source.documentNumber}` : '',
-        `File: ${source.source}`,
+        // The internal file name (tc-1788…pdf) is storage plumbing, not
+        // something a user needs in an answer, so it is only shown when it is
+        // the only identification available (no number, no caption).
+        !source.documentNumber && !(source.title && source.title !== source.source) ? `File: ${source.source}` : '',
         source.title && source.title !== source.source ? `Caption: ${source.title}` : '',
         source.page ? `Page: ${source.page}` : ''
       ].filter(Boolean).join(' | ');
@@ -894,6 +1434,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       blocks.push(block);
     }
     return [
+      history ? `Earlier in this conversation:\n${history}\n` : '',
       'Answer the question using only these passages from the Rail Docs library.',
       '',
       blocks.join('\n\n---\n\n'),
@@ -1017,7 +1558,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   /* ---------------- public API ---------------- */
 
-  async function ask(question) {
+  async function ask(question, { history = [] } = {}) {
     const config = getConfig();
     const trimmed = String(question || '').trim();
     if (!trimmed) {
@@ -1031,7 +1572,13 @@ function createRag({ db, uploadDirectory, logger = console }) {
       throw error;
     }
 
-    const sources = await retrieve(trimmed, config.topK);
+    // Retrieval runs on a self-contained version of the question so pronouns
+    // from a follow-up still find the right passages.
+    const searchQuestion = standaloneQuestion(trimmed, history);
+    if (searchQuestion !== trimmed) {
+      logger.log(`[rag] follow-up detected, searching for: ${searchQuestion}`);
+    }
+    const sources = await retrieve(searchQuestion, config.topK);
     if (!sources.length) {
       return {
         answer: "I could not find anything in the Rail Docs library that answers that. Try naming a document number, or use fewer and more specific words.",
@@ -1040,7 +1587,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       };
     }
 
-    const { text, model } = await generateAnswer(buildPrompt(trimmed, sources));
+    const { text, model } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config)));
     const answer = text || 'The AI service returned an empty answer. Please try rephrasing the question.';
     return {
       answer,
@@ -1048,6 +1595,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       sources: sources.map(source => ({
         documentId: source.documentId,
         source: source.source,
+        originalName: source.originalName,
         documentNumber: source.documentNumber,
         documentType: source.documentType,
         title: source.title,
@@ -1111,6 +1659,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       indexedFiles: counts.indexed_files || 0,
       problemFiles: counts.problem_files || 0,
       restrictedFiles: counts.restricted_files || 0,
+      ocrFiles: counts.ocr_files || 0,
       chunks: counts.chunk_count || 0,
       lastIndexedAt: counts.last_indexed_at || null,
       lastRunAt: stats.lastRunAt,
@@ -1153,6 +1702,15 @@ function createRag({ db, uploadDirectory, logger = console }) {
       })
       .catch(() => {});
 
+    // Surface files that can never be cited properly: they are indexed but the
+    // library has no row for them, so answers can only show a raw file name.
+    try {
+      const orphans = statements.listIndexedSources.all().filter(row => row.status === 'indexed' && !documentMetadata(row.source));
+      if (orphans.length) {
+        logger.warn(`[rag] ${orphans.length} indexed file(s) have no library metadata, so they cannot be cited by document number: ${orphans.slice(0, 5).map(row => row.source).join(', ')}${orphans.length > 5 ? ', …' : ''}`);
+      }
+    } catch {}
+
     const tick = async () => {
       if (stopped) return;
       try {
@@ -1172,6 +1730,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = null;
+    stopOcrScheduler();
   }
 
   return {
@@ -1187,6 +1746,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
     start,
     stop,
     isEnabled: () => isConfigured(getConfig()),
+    listFiles: () => statements.listFiles.all(),
     invalidateCache
   };
 }
@@ -1194,9 +1754,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
 module.exports = {
   createRag,
   extractPdfText,
+  ocrPdfPages,
+  ocrMissingTextPages,
   buildChunks,
   chunkPageText,
   normalizeExtractedText,
+  historyBlock,
+  standaloneQuestion,
+  keywordQueryFromQuestion,
   AiServiceError,
   getConfig
 };

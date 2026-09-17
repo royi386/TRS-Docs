@@ -1,5 +1,11 @@
 FROM node:24-bookworm-slim
 WORKDIR /app
+# fontconfig + at least one font family are required: without them the Linux
+# build of @napi-rs/canvas silently draws nothing, which breaks PDF rasterising
+# for OCR (pages come out blank).
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends python3 make g++ fontconfig fonts-dejavu-core \
+	&& rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends python3 make g++ \

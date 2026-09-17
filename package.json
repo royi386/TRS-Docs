@@ -8,11 +8,13 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "multer": "^2.0.2",
     "path": "^0.12.7",
-    "pdfjs-dist": "^6.3.289"
+    "pdfjs-dist": "^6.3.289",
+    "tesseract.js": "^6.0.1"
   }
 }

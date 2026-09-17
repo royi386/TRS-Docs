@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
 const Database = require('better-sqlite3');
 const cors = require('cors');
 const { createRag, AiServiceError } = require('./rag');
@@ -21,7 +22,14 @@ fs.mkdirSync(feedbackUploadDirectory, { recursive: true });
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+// The app shell (HTML and the service worker) must always be revalidated, so
+// devices pick up new versions immediately instead of showing a stale UI. The
+// rest (icons, fonts) can use the default heuristic caching.
+app.use(express.static('public', {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
 
 // Database setup
 const db = new Database(databasePath);
@@ -232,7 +240,7 @@ const upload = multer({
       cb(new Error('Only PDF files are allowed!'), false);
     }
   },
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 200 * 1024 * 1024 } // 200MB limit
 });
 
 const feedbackUpload = multer({
@@ -243,7 +251,7 @@ const feedbackUpload = multer({
       cb(null, 'feedback-' + uniqueSuffix + path.extname(file.originalname));
     }
   }),
-  limits: { fileSize: 25 * 1024 * 1024 }
+  limits: { fileSize: 200 * 1024 * 1024 } // matches the document limit
 });
 
 // Routes
@@ -253,10 +261,79 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Lightweight host status for the header widget: CPU load, temperature, memory.
+// Temperature comes from the host kernel through /sys (containers share the
+// host's sysfs), so no extra mounts are needed on typical Linux hosts. When no
+// readable sensor exists the field is null and the widget hides it.
+let systemStatusCache = { at: 0, value: null };
+
+function readCpuTemperature() {
+  let chips = [];
+  try {
+    chips = fs.readdirSync('/sys/class/hwmon').map(entry => {
+      const base = path.join('/sys/class/hwmon', entry);
+      let name = '';
+      try { name = fs.readFileSync(path.join(base, 'name'), 'utf8').trim(); } catch { }
+      const temps = [];
+      try {
+        for (const file of fs.readdirSync(base)) {
+          if (!/^temp\d+_input$/.test(file)) continue;
+          const raw = Number(fs.readFileSync(path.join(base, file), 'utf8').trim());
+          if (Number.isFinite(raw) && raw > 0) temps.push(raw / 1000);
+        }
+      } catch { }
+      return { name, max: temps.length ? Math.max(...temps) : null };
+    }).filter(chip => chip.max !== null);
+  } catch { }
+  if (!chips.length) return null;
+  // Prefer a real CPU sensor; ACPI thermal zones are a rough fallback.
+  const preferred = chips.find(chip => /^(coretemp|k10temp|zenpower|cpu_thermal)$/.test(chip.name))
+    || chips.find(chip => /^acpitz/.test(chip.name))
+    || chips[0];
+  return Math.round(preferred.max * 10) / 10;
+}
+
+app.get('/api/system-status', (req, res) => {
+  // Brief cache so several open tabs share one read, while values stay fresh
+  // for the 2-second polling of the header widget. The reads themselves are
+  // a few /proc and /sys files — microseconds of work.
+  if (systemStatusCache.value && Date.now() - systemStatusCache.at < 1000) {
+    return res.json(systemStatusCache.value);
+  }
+  const cores = os.cpus().length || 1;
+  const [load1] = os.loadavg();
+  const value = {
+    load1: Math.round(load1 * 100) / 100,
+    loadPercent: Math.round((load1 / cores) * 100),
+    cores,
+    cpuTemp: readCpuTemperature(),
+    memoryUsedPercent: Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 100),
+    uptimeSeconds: Math.round(os.uptime())
+  };
+  systemStatusCache = { at: Date.now(), value };
+  res.json(value);
+});
+
 // Library assistant
 app.get('/api/chat/status', async (req, res) => {
   res.json(await rag.getStatus());
 });
+
+// The chat remembers the last few questions in the same session, so follow-up
+// questions like "and its torque limit?" keep their context. The client sends
+// its own last turns; they are validated and capped here.
+const CHAT_MAX_HISTORY_TURNS = 6;
+
+function sanitizeChatHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) return [];
+  return rawHistory
+    .slice(-CHAT_MAX_HISTORY_TURNS)
+    .map(turn => ({
+      question: typeof turn?.question === 'string' ? turn.question.trim().slice(0, 1000) : '',
+      answer: typeof turn?.answer === 'string' ? turn.answer.trim().slice(0, 4000) : ''
+    }))
+    .filter(turn => turn.question);
+}
 
 app.post('/api/chat', async (req, res) => {
   if (!rag.isEnabled()) {
@@ -265,12 +342,13 @@ app.post('/api/chat', async (req, res) => {
   const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
   if (!question) return res.status(400).json({ error: 'Please type a question.' });
   if (question.length > 1000) return res.status(400).json({ error: 'That question is too long. Please shorten it.' });
+  const history = sanitizeChatHistory(req.body?.history);
   if (chatRateLimited(req)) {
     return res.status(429).json({ error: 'Too many questions in a short time. Please wait a minute and try again.' });
   }
 
   try {
-    res.json(await rag.ask(question));
+    res.json(await rag.ask(question, { history }));
   } catch (error) {
     console.error('Chat error:', error);
     if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
@@ -284,8 +362,23 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Live indexing progress for the admin panel. Uploads index in the background,
+// so this is how the admin sees that the new document is actually being read.
+const indexProgress = new Map(); // source -> { stage, pagesDone, pagesTotal, startedAt }
+let activeIndexSource = null;
+
+app.get('/api/chat/progress', requireAdmin, (req, res) => {
+  res.json({ active: activeIndexSource, progress: [...indexProgress.values()] });
+});
+
+// Admin: per-file index/OCR state for the indexing panel.
+app.get('/api/chat/index-status', requireAdmin, (req, res) => {
+  if (!rag.isEnabled()) return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  res.json({ files: rag.listFiles() });
+});
+
 // Admin: rebuild the assistant index. Runs in the background because a full
-// rebuild can take a while on a large library.
+// rebuild (OCR included) can take a while on a large library.
 app.post('/api/chat/reindex', requireAdmin, async (req, res) => {
   if (!rag.isEnabled()) {
     return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
@@ -660,13 +753,19 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
 
     // The assistant picks this up right away instead of waiting for the next scan.
     if (rag.isEnabled()) {
-      rag.indexFile(req.file.filename).catch(error => console.error('Indexing uploaded PDF failed:', error.message));
+      activeIndexSource = req.file.filename;
+      rag.indexFile(req.file.filename)
+        .then(result => console.log(`Indexed ${req.file.originalname}: ${result.status}`))
+        .catch(error => console.error('Indexing uploaded PDF failed:', error.message))
+        .finally(() => { if (activeIndexSource === req.file.filename) activeIndexSource = null; });
     }
 
     res.json({
       success: true,
       id: result.lastInsertRowid,
-      message: 'Document uploaded successfully'
+      message: 'Document uploaded successfully',
+      // The admin panel polls this endpoint to show live indexing progress.
+      progressUrl: '/api/chat/progress'
     });
   } catch (error) {
     console.error('Upload error:', error);
