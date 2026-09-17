@@ -5,3 +5,4 @@ smi_tc.db
 /uploads
 /feedback-uploads
 .env
+docker-compose.yml
