@@ -21,7 +21,7 @@ services:
       # --- Local models (AI_PROVIDER=ollama) ---
       # These two together need about 1.7 GB, so Immich keeps its memory.
       # Bigger models answer better but are slow on a CPU-only box: see README.
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:1.7b}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
       # --- Hosted option (AI_PROVIDER=gemini) ---
@@ -69,8 +69,8 @@ services:
       OLLAMA_MAX_LOADED_MODELS: "2"
       # 2 lets a question be answered while an embedding batch runs. Raise to
       # 3-4 if several people ask questions at the same time.
-      OLLAMA_NUM_PARALLEL: 2
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_NUM_PARALLEL: 5
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-300m}
       # Cap inference threads so Ollama leaves headroom for the app and the OCR
       # workers instead of grabbing every core during a question.
       OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-8}
@@ -96,7 +96,7 @@ services:
 
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:1.7b}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
     entrypoint: ["/bin/sh", "-c"]
