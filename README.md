@@ -5,7 +5,7 @@ Searchable Indian Railways RDSO SMI, MS and TC PDF library. Engineers can search
 ## Run with Docker on OMV
 
 1. Copy this folder to the OMV server at `10.189.34.56`.
-2. Edit `docker-compose.yml` and replace `change-this-to-a-long-password`.
+2. Copy `.env.example` to `.env` and set `ADMIN_PASSWORD` (see the file for every variable the compose file reads).
 3. Start it with `docker compose up -d --build`.
 4. Open `http://10.189.34.56:3000` on the railway network.
 
