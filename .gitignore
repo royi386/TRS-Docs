@@ -5,4 +5,6 @@ smi_tc.db
 /uploads
 /feedback-uploads
 .env
-docker-compose.yml
+
+# Secret env file that pairs with docker-compose.yml
+!docker-compose.yml
