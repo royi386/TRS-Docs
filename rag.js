@@ -59,9 +59,9 @@ const SYSTEM_INSTRUCTION = [
   '',
   'Rules:',
   '1. Use only facts that appear in the context passages. Never use outside knowledge, and never guess.',
-  '2. If the context does not contain the answer, reply that the library does not appear to cover it and list the closest related documents you did find. Do not invent document numbers, dates or values.',
+  '2. If the context does not contain the answer, reply that the library does not appear to cover it, and briefly name any document you genuinely used while checking (by its document number or caption). Do not invent document numbers, dates or values, and never pad the reply with documents that did not help.',
   '3. Some passages are unreadable because of broken OCR (random symbols instead of words). Never quote them and never infer an answer from them; ignore them unless another passage answers the question.',
-  '4. Cite the passages you use with their bracketed numbers, for example [1] or [2][3].',
+  '4. Never use bracketed citation numbers like [1] or [2]; the app lists the source documents below the answer automatically. Only use square brackets for real document references, for example [SMI-001].',
   '5. Prefer exact document numbers, figures and technical wording from the passages.',
   '6. If the passages disagree, say so rather than picking one silently.',
   '7. Answer in the same language the question was asked in.',
@@ -120,6 +120,33 @@ function standaloneQuestion(question, history) {
   if (!needsContext) return question;
 
   return `${priorQuestion} — ${question}`;
+}
+
+/**
+ * The app lists the source documents under every answer as clickable chips, so
+ * bracketed citation markers like [1] or [2][3] in the text are pure noise —
+ * and small local models keep emitting them even when the prompt forbids it.
+ * Inline clusters ([1][2]) are removed outright. A lone [n] is swapped for the
+ * document number of the passage it names, so a model that lists "[1], [2] and
+ * [3]" still becomes readable text naming real documents instead of broken
+ * grammar. Anything unresolvable is dropped.
+ */
+function cleanAnswerText(text, sources = []) {
+  return String(text || '')
+    .replace(/\[\d+\](?:\s*\[\d+\])+/g, '')
+    .replace(/\[(\d+)\]/g, (marker, num) => {
+      const source = sources[Number(num) - 1];
+      if (!source) return '';
+      const label = source.documentNumber
+        || (source.title && source.title !== source.source ? source.title : '');
+      return label || '';
+    })
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/,\s*(?=[,.;:])/g, '')
+    .replace(/,\s*,/g, ', ')
+    .replace(/\b(are|is|was|were)\s*,\s*(?=[a-z])/gi, '$1 ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
 /**
@@ -1419,8 +1446,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index];
       const heading = [
-        `[${index + 1}]`,
-        source.documentNumber ? `Document number: ${source.documentNumber}` : '',
+        `Passage ${index + 1},`,
+        source.documentNumber ? `document number: ${source.documentNumber}` : '',
         // The internal file name (tc-1788…pdf) is storage plumbing, not
         // something a user needs in an answer, so it is only shown when it is
         // the only identification available (no number, no caption).
@@ -1588,7 +1615,9 @@ function createRag({ db, uploadDirectory, logger = console }) {
     }
 
     const { text, model } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config)));
-    const answer = text || 'The AI service returned an empty answer. Please try rephrasing the question.';
+    const answer = cleanAnswerText(text, sources)
+      || String(text || '').trim()
+      || 'The AI service returned an empty answer. Please try rephrasing the question.';
     return {
       answer,
       model,
@@ -1761,6 +1790,7 @@ module.exports = {
   normalizeExtractedText,
   historyBlock,
   standaloneQuestion,
+  cleanAnswerText,
   keywordQueryFromQuestion,
   AiServiceError,
   getConfig
