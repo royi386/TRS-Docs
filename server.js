@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const os = require('os');
 const Database = require('better-sqlite3');
 const cors = require('cors');
-const { createRag, AiServiceError } = require('./rag');
+const { createRag, AiServiceError, streamEvent } = require('./rag');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -335,6 +335,23 @@ function sanitizeChatHistory(rawHistory) {
     .filter(turn => turn.question);
 }
 
+// Shared mapper so /api/chat and /api/chat/stream answer with the same words
+// and status codes no matter how the client asked.
+function chatErrorPayload(error) {
+  let statusCode = error?.statusCode || 500;
+  let message = error?.message || 'The assistant could not answer that question. Please try again.';
+  if (error instanceof AiServiceError) {
+    if (error.kind === 'auth') {
+      statusCode = 503;
+      message = 'The library assistant is not configured correctly on this server.';
+    } else if (error.kind === 'quota') {
+      statusCode = 429;
+      message = 'The assistant has reached its usage limit. Please try again later.';
+    }
+  }
+  return { error: message, statusCode };
+}
+
 app.post('/api/chat', async (req, res) => {
   if (!rag.isEnabled()) {
     return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
@@ -351,14 +368,67 @@ app.post('/api/chat', async (req, res) => {
     res.json(await rag.ask(question, { history }));
   } catch (error) {
     console.error('Chat error:', error);
-    if (error.statusCode) return res.status(error.statusCode).json({ error: error.message });
-    if (error instanceof AiServiceError) {
-      if (error.kind === 'auth') return res.status(503).json({ error: 'The library assistant is not configured correctly on this server.' });
-      if (error.kind === 'quota') return res.status(429).json({ error: 'The assistant has reached its usage limit. Please try again later.' });
-      if (error.kind === 'network') return res.status(502).json({ error: error.message });
-      if (error.kind === 'model') return res.status(503).json({ error: error.message });
+    const payload = chatErrorPayload(error);
+    res.status(payload.statusCode).json({ error: payload.error });
+  }
+});
+
+// Server-sent events twin of /api/chat: the answer arrives token by token while
+// the model writes it, so users see progress within a second or two instead of
+// staring at a typing dot for the whole generation. Event order is: sources
+// (once, as soon as retrieval picked the passages), token (many), final (the
+// cleaned answer text), then done. An error event replaces everything else.
+app.post('/api/chat/stream', async (req, res) => {
+  if (!rag.isEnabled()) {
+    return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  }
+  const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
+  if (!question) return res.status(400).json({ error: 'Please type a question.' });
+  if (question.length > 1000) return res.status(400).json({ error: 'That question is too long. Please shorten it.' });
+  const history = sanitizeChatHistory(req.body?.history);
+  if (chatRateLimited(req)) {
+    return res.status(429).json({ error: 'Too many questions in a short time. Please wait a minute and try again.' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  // Comment pings keep intermediaries from closing an idle connection while the
+  // model is still loading or retrieval is running.
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(': ping\n\n');
+  }, 15000);
+  req.on('close', () => clearInterval(heartbeat));
+
+  let failed = false;
+  try {
+    for await (const event of rag.askStream(question, { history })) {
+      if (res.writableEnded) break;
+      if (event.error) {
+        const payload = chatErrorPayload(event.error);
+        console.error('Chat stream error:', payload.error);
+        failed = true;
+        streamEvent(res, 'error', { error: payload.error });
+        break;
+      }
+      if (event.sources) streamEvent(res, 'sources', { sources: event.sources });
+      if (event.answer !== undefined) streamEvent(res, 'final', { answer: event.answer, model: event.model || null });
+      if (event.token) streamEvent(res, 'token', { text: event.token });
     }
-    res.status(500).json({ error: 'The assistant could not answer that question. Please try again.' });
+    // A done event only means "the answer finished cleanly"; after an error
+    // event it would be contradictory, so it is skipped.
+    if (!res.writableEnded && !failed) streamEvent(res, 'done', {});
+  } catch (error) {
+    console.error('Chat stream failed:', error);
+    if (!res.writableEnded) streamEvent(res, 'error', { error: 'The assistant could not answer that question. Please try again.' });
+  } finally {
+    clearInterval(heartbeat);
+    if (!res.writableEnded) res.end();
   }
 });
 

@@ -131,8 +131,36 @@ function standaloneQuestion(question, history) {
  * [3]" still becomes readable text naming real documents instead of broken
  * grammar. Anything unresolvable is dropped.
  */
+/**
+ * Filler lines a thinking model starts its reasoning with. Also matched by
+ * older Ollama builds that stream reasoning as plain text with no tags. The
+ * system prompt forbids answers that open like this, so a hit means the text
+ * is reasoning, not the answer.
+ */
+const REASONING_OPENER = /^\s*(okay\b|alright\b|hmm+\b|let me\b|the user\b|i need to\b|i should\b|i'll\b|i will\b)/i;
+
+/**
+ * Removes a thinking model's reasoning. Handles a well-formed <think>…</think>
+ * pair, a lone closing tag (everything before it was reasoning), an opening tag
+ * that never closes (the answer budget ran out mid-reasoning — everything after
+ * it is reasoning), and reasoning streamed with no tags at all.
+ */
+function stripThinking(text) {
+  let value = String(text || '');
+  value = value.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const closeIndex = value.search(/<\/think>/i);
+  if (closeIndex !== -1) {
+    value = value.slice(closeIndex + 8);
+  } else {
+    const openIndex = value.search(/<think>/i);
+    if (openIndex !== -1) value = value.slice(0, openIndex);
+    else if (REASONING_OPENER.test(value)) return '';
+  }
+  return value.trim();
+}
+
 function cleanAnswerText(text, sources = []) {
-  return String(text || '')
+  return stripThinking(text)
     .replace(/\[\d+\](?:\s*\[\d+\])+/g, '')
     .replace(/\[(\d+)\]/g, (marker, num) => {
       const source = sources[Number(num) - 1];
@@ -828,6 +856,231 @@ async function ollamaRequest(apiPath, body, { baseUrl }) {
   });
 }
 
+/**
+ * POSTs a chat request to Ollama and streams the reply as it is generated.
+ * Ollama answers with NDJSON: one JSON object per line, the last one carrying
+ * done: true and the usage numbers. The assembled message (role + full text) is
+ * returned so the caller keeps the exact shape ollamaRequest() produced before;
+ * every token goes out through onToken the moment it arrives, which is the
+ * whole point of streaming.
+ */
+async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null) {
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (error) {
+    throw new AiServiceError(
+      `Could not reach the local AI server at ${baseUrl}. Check that the ollama service is running. (${error.message})`,
+      { retryable: true, kind: 'network' }
+    );
+  }
+
+  if (!response.ok || !response.body) {
+    const raw = await response.text().catch(() => '');
+    let payload = null;
+    try { payload = raw ? JSON.parse(raw) : null; } catch { payload = null; }
+    const message = String(payload?.error || raw.slice(0, 400) || `HTTP ${response.status}`);
+    const missingModel = response.status === 404 || /not found|try pulling|no such model/i.test(message);
+    throw new AiServiceError(message, {
+      status: response.status,
+      retryable: !missingModel && response.status >= 500,
+      kind: missingModel ? 'model' : 'request'
+    });
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  // Chat stream frames carry incremental content deltas, and the final done
+  // frame repeats an empty message, so the text has to be concatenated here —
+  // taking the last frame's message verbatim would lose the whole answer.
+  let message = { role: 'assistant', content: '' };
+  // Thinking models (qwen3 and friends) stream their reasoning first, wrapped
+  // in <think>…</think>. Those frames are held back — never forwarded to the
+  // client — and dropped from the assembled answer. A tag can also straddle a
+  // stream chunk, so a small tail is kept across frames while matching; an
+  // unclosed <think> (answer budget exhausted mid-reasoning) suppresses
+  // everything after it as well, so half an answer never replaces a clean one.
+  let thinking = false;
+  let answerStarted = false;
+  let pendingTail = '';
+  const THINK_OPEN = '<think>';
+  const THINK_CLOSE = '</think>';
+  // Length of the longest suffix of text that is a proper prefix of tag —
+  // i.e. the start of a tag cut in two by a stream chunk boundary.
+  const longestPartialTag = (text, tag) => {
+    for (let length = Math.min(tag.length - 1, text.length); length > 0; length -= 1) {
+      if (text.endsWith(tag.slice(0, length))) return length;
+    }
+    return 0;
+  };
+  const emitVisible = text => {
+    if (!text) return;
+    // The answer must not open with the blank line the model leaves after its
+    // </think> tag, so leading whitespace is trimmed off the first emission.
+    if (!answerStarted) {
+      text = text.replace(/^\s+/, '');
+      if (!text) return;
+      // Older Ollama builds stream a thinking model's reasoning as plain text
+      // with no <think> tags at all — the exact failure this filter exists
+      // for. A response opening with a reasoning-style filler line is treated
+      // as reasoning: suppressed until a </think> marker shows up, or to the
+      // end of the stream. /no_think makes this path rare anyway.
+      if (REASONING_OPENER.test(text)) {
+        thinking = true;
+        return;
+      }
+      answerStarted = true;
+    }
+    message.content += text;
+    if (onToken) onToken(text);
+  };
+  const consumeLine = line => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    let chunk = null;
+    try { chunk = JSON.parse(trimmed); } catch { return false; }
+    const piece = String(chunk?.message?.content || '');
+    if (piece) {
+      let buffered = pendingTail + piece;
+      pendingTail = '';
+      while (buffered) {
+        if (thinking) {
+          const end = buffered.indexOf(THINK_CLOSE);
+          if (end === -1) {
+            // Keep only the tail long enough to hold a split </think> tag.
+            pendingTail = buffered.slice(-(THINK_CLOSE.length - 1));
+            buffered = '';
+            break;
+          }
+          thinking = false;
+          buffered = buffered.slice(end + THINK_CLOSE.length);
+        } else {
+          const start = buffered.indexOf(THINK_OPEN);
+          if (start === -1) {
+            // Hold back a possible tag start split across frames before
+            // emitting the rest, so "<th" + "ink>…" is never shown.
+            const hold = longestPartialTag(buffered, THINK_OPEN);
+            pendingTail = hold ? buffered.slice(buffered.length - hold) : '';
+            emitVisible(hold ? buffered.slice(0, buffered.length - hold) : buffered);
+            buffered = '';
+            break;
+          }
+          emitVisible(buffered.slice(0, start));
+          thinking = true;
+          buffered = buffered.slice(start + THINK_OPEN.length);
+        }
+      }
+      if (!thinking && buffered) emitVisible(buffered);
+    }
+    if (chunk.message?.role) message.role = chunk.message.role;
+    if (chunk.error) throw new AiServiceError(String(chunk.error), { retryable: false, kind: 'request' });
+    return chunk.done === true;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineAt = buffer.indexOf('\n');
+    while (newlineAt !== -1) {
+      const line = buffer.slice(0, newlineAt);
+      buffer = buffer.slice(newlineAt + 1);
+      newlineAt = buffer.indexOf('\n');
+      if (consumeLine(line)) return { message, done: true };
+    }
+  }
+  if (buffer.trim() && consumeLine(buffer)) {
+    if (thinking) message.content = '';
+    return { message, done: true };
+  }
+  // Stream ended while the model was still reasoning: nothing usable was said.
+  if (thinking) {
+    message.content = '';
+    return { message, done: true };
+  }
+  if (pendingTail) {
+    const visible = pendingTail;
+    pendingTail = '';
+    emitVisible(visible);
+  }
+  return { message, done: false };
+}
+
+/**
+ * POSTs to the Gemini streaming endpoint and consumes its SSE reply, handing
+ * every text piece to onToken as it arrives. Returns the assembled shape that
+ * extractAnswerText() expects, so both the streaming and the buffered paths
+ * share one extractor.
+ */
+async function streamGeminiRequest(apiPath, body, { apiKey, apiBase }, onToken = null) {
+  let response;
+  try {
+    response = await fetch(`${apiBase}${apiPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    throw new AiServiceError(`Could not reach the AI service: ${error.message}`, { retryable: true, kind: 'network' });
+  }
+
+  if (!response.ok || !response.body) {
+    const raw = await response.text().catch(() => '');
+    let payload = null;
+    try { payload = raw ? JSON.parse(raw) : null; } catch { payload = null; }
+    const message = payload?.error?.message || raw.slice(0, 400) || `HTTP ${response.status}`;
+    const status = response.status;
+    const modelProblem = status === 404
+      || /not found|not supported|unsupported model|does not exist|is not available/i.test(message);
+    const error = new AiServiceError(message, {
+      status,
+      retryable: status === 429 || status === 500 || status === 503 || status === 504,
+      kind: status === 401 || status === 403 ? 'auth' : modelProblem ? 'model' : status === 429 ? 'quota' : 'request'
+    });
+    const retryHeader = response.headers.get('retry-after');
+    if (retryHeader) error.retryAfterSeconds = Number(retryHeader);
+    const retryInfo = payload?.error?.details?.find(detail => String(detail['@type'] || '').includes('RetryInfo'));
+    if (retryInfo?.retryDelay) error.retryAfterSeconds = parseFloat(String(retryInfo.retryDelay)) || error.retryAfterSeconds;
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const parts = [];
+  let blockReason = null;
+  let finishReason = null;
+  const consumeLine = line => {
+    if (!line.startsWith('data:')) return;
+    const json = line.slice(5).trim();
+    if (!json || json === '[DONE]') return;
+    let payload = null;
+    try { payload = JSON.parse(json); } catch { return; }
+    if (payload.promptFeedback?.blockReason) blockReason = payload.promptFeedback.blockReason;
+    const candidate = payload.candidates?.[0];
+    if (candidate?.finishReason) finishReason = candidate.finishReason;
+    for (const part of candidate?.content?.parts || []) {
+      if (part && typeof part.text === 'string' && !part.thought && part.text) {
+        parts.push(part.text);
+        if (onToken) onToken(part.text);
+      }
+    }
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineAt = buffer.indexOf('\n');
+    while (newlineAt !== -1) {
+      consumeLine(buffer.slice(0, newlineAt).replace(/\r$/, ''));
+      buffer = buffer.slice(newlineAt + 1);
+      newlineAt = buffer.indexOf('\n');
+    }
+  }
+  consumeLine(buffer.replace(/\r$/, ''));
+  return { candidates: [{ content: { parts: parts.map(text => ({ text })) }, finishReason }], promptFeedback: { blockReason } };
+}
+
 async function withRetry(run, { attempts = 4, onRetry } = {}) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -875,10 +1128,6 @@ function dotProduct(left, right) {
   for (let index = 0; index < length; index += 1) total += left[index] * right[index];
   return total;
 }
-
-/* ------------------------------------------------------------------ *
- * RAG service
- * ------------------------------------------------------------------ */
 
 function createRag({ db, uploadDirectory, logger = console }) {
   // Which chat models are known to work on this key, newest first.
@@ -1439,6 +1688,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   /* ---------------- answer generation ---------------- */
 
+  const STREAM_DONE = { done: true, sources: null, model: null, error: null };
+
   function buildPrompt(question, sources, history = '') {
     const config = getConfig();
     const blocks = [];
@@ -1496,14 +1747,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
     return [...new Set([preferredChatModel, configured, ...CHAT_MODEL_FALLBACKS].filter(Boolean))];
   }
 
-  async function generateLocalAnswer(prompt, config) {
+  async function generateLocalAnswer(prompt, config, onToken = null) {
     const request = {
       model: config.ollamaChatModel,
       messages: [
         { role: 'system', content: SYSTEM_INSTRUCTION },
         { role: 'user', content: prompt }
       ],
-      stream: false,
+      stream: true,
       keep_alive: config.ollamaKeepAlive,
       options: {
         temperature: config.ollamaTemperature,
@@ -1513,14 +1764,24 @@ function createRag({ db, uploadDirectory, logger = console }) {
     };
 
     // Thinking models reason at length before answering, which is unbearable on
-    // a CPU-only box. Ask them not to, and fall back to a plain request if this
+    // a CPU-only box: the reasoning tokens slow the answer down and, when the
+    // Ollama build is too old to honour the think flag, leak into the chat.
+    // The /no_think soft switch makes qwen3 skip its reasoning block and is
+    // ignored by every other model, so it is always appended.
+    if (/(^|[\s:/])qwen3/i.test(config.ollamaChatModel)) {
+      request.messages = [
+        { role: 'system', content: `${request.messages[0].content}\n/no_think` },
+        ...request.messages.slice(1)
+      ];
+    }
+    // Ask them not to think as well, and fall back to a plain request if this
     // model or Ollama version rejects the flag.
     const bodies = [{ ...request, think: false }, request];
     let lastError;
     for (const body of bodies) {
       try {
         const payload = await withRetry(
-          () => ollamaRequest('/api/chat', body, { baseUrl: config.ollamaBaseUrl }),
+          () => streamOllamaChat(body, config, onToken),
           { attempts: 3, onRetry: (error, waitMs) => logger.warn(`[rag] answer retry in ${Math.round(waitMs)}ms: ${error.message}`) }
         );
         const text = String(payload?.message?.content || '').trim();
@@ -1536,10 +1797,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
     throw lastError || new AiServiceError('The local model did not return an answer.');
   }
 
-  async function generateAnswer(prompt) {
+  async function generateAnswer(prompt, onToken = null) {
     const config = getConfig();
     if (!isConfigured(config)) throw new AiServiceError('The AI service is not configured on this server.', { kind: 'auth' });
-    if (config.provider === 'ollama') return generateLocalAnswer(prompt, config);
+    if (config.provider === 'ollama') return generateLocalAnswer(prompt, config, onToken);
 
     const generationConfig = { maxOutputTokens: config.answerMaxTokens };
     let lastError;
@@ -1557,7 +1818,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       for (const body of bodies) {
         try {
           const payload = await withRetry(
-            () => geminiRequest(`/models/${model}:generateContent`, body, config),
+            () => streamGeminiRequest(`/models/${model}:streamGenerateContent?alt=sse`, body, config, onToken),
             { attempts: 3, onRetry: (error, waitMs) => logger.warn(`[rag] answer retry in ${Math.round(waitMs)}ms: ${error.message}`) }
           );
           preferredChatModel = model;
@@ -1621,17 +1882,136 @@ function createRag({ db, uploadDirectory, logger = console }) {
     return {
       answer,
       model,
-      sources: sources.map(source => ({
-        documentId: source.documentId,
-        source: source.source,
-        originalName: source.originalName,
-        documentNumber: source.documentNumber,
-        documentType: source.documentType,
-        title: source.title,
-        page: source.page,
-        score: source.score
-      }))
+      sources: sourcesToClient(sources)
     };
+  }
+
+  /** The client only needs the fields the UI shows, not the raw chunk text. */
+  function sourcesToClient(sources) {
+    return sources.map(source => ({
+      documentId: source.documentId,
+      source: source.source,
+      originalName: source.originalName,
+      documentNumber: source.documentNumber,
+      documentType: source.documentType,
+      title: source.title,
+      page: source.page,
+      score: source.score
+    }));
+  }
+
+  /**
+   * Same pipeline as ask(), but written as a streaming generator: it yields
+   * { sources } once retrieval has picked the passages (so the UI can show the
+   * document chips while the model is still thinking), then { token } for every
+   * piece of the answer as it is generated, and finishes with STREAM_DONE. On a
+   * failure it yields { error } so the route can turn it into an SSE error
+   * event with the right HTTP-style classification.
+   */
+  async function* askStream(question, { history = [] } = {}) {
+    const config = getConfig();
+    const trimmed = String(question || '').trim();
+    if (!trimmed) {
+      yield { error: { message: 'Please type a question.', statusCode: 400 } };
+      return;
+    }
+    if (trimmed.length > 1000) {
+      yield { error: { message: 'That question is too long. Please shorten it.', statusCode: 400 } };
+      return;
+    }
+
+    // Tokens arrive deep inside the HTTP stream reader, outside this
+    // generator's scope, so they travel through this queue: the callback below
+    // (wired into generateAnswer) pushes and the yield loop drains. A promise
+    // wake-up keeps the loop idle while it waits for the next token.
+    const queue = [];
+    let wake = null;
+    const pushToken = token => {
+      queue.push(token);
+      if (wake) { wake(); wake = null; }
+    };
+    const nextToken = () => new Promise(resolve => {
+      if (queue.length) return resolve();
+      wake = resolve;
+    });
+
+    const generation = (async () => {
+      try {
+        const searchQuestion = standaloneQuestion(trimmed, history);
+        if (searchQuestion !== trimmed) {
+          logger.log(`[rag] follow-up detected, searching for: ${searchQuestion}`);
+        }
+        const sources = await retrieve(searchQuestion, config.topK);
+        if (!sources.length) {
+          return {
+            sources: [],
+            answer: "I could not find anything in the Rail Docs library that answers that. Try naming a document number, or use fewer and more specific words.",
+            model: null
+          };
+        }
+        return {
+          sources: sourcesToClient(sources),
+          prompt: buildPrompt(trimmed, sources, historyBlock(history, config))
+        };
+      } catch (error) {
+        return { error };
+      }
+    })();
+
+    const prepared = await generation;
+    if (prepared.error) {
+      yield { error: classifyError(prepared.error) };
+      return;
+    }
+    if (prepared.answer !== undefined) {
+      // No passages at all: the answer is already complete.
+      yield { sources: prepared.sources, answer: prepared.answer, model: null };
+      yield STREAM_DONE;
+      return;
+    }
+
+    yield { sources: prepared.sources };
+
+    const finished = (async () => {
+      try {
+        const { text, model } = await generateAnswer(prepared.prompt, pushToken);
+        const answer = cleanAnswerText(text, prepared.sources)
+          || String(text || '').trim()
+          || 'The AI service returned an empty answer. Please try rephrasing the question.';
+        return { answer, model };
+      } catch (error) {
+        return { error };
+      }
+    })();
+
+    // Forward tokens as they stream in, and keep draining until the generator
+    // is done. A queued token may still arrive between the last drain and the
+    // completion check, so the loop exits only when both queues are settled.
+    let result = null;
+    while (!result) {
+      while (queue.length) yield { token: queue.shift() };
+      const race = await Promise.race([finished.then(value => ({ value })), nextToken().then(() => null)]);
+      if (race) result = race.value;
+    }
+    while (queue.length) yield { token: queue.shift() };
+
+    if (result.error) {
+      yield { error: classifyError(result.error) };
+      return;
+    }
+    yield { answer: result.answer, model: result.model };
+    yield STREAM_DONE;
+  }
+
+  /** Maps a thrown error to the { message, statusCode } shape of SSE events. */
+  function classifyError(error) {
+    const statusCode = error?.statusCode
+      || (error instanceof AiServiceError && error.kind === 'auth' ? 503
+        : error instanceof AiServiceError && error.kind === 'quota' ? 429
+        : error instanceof AiServiceError && error.kind === 'network' ? 502
+        : error instanceof AiServiceError && error.kind === 'model' ? 503
+        : 500);
+    return { message: error?.message || 'The assistant could not answer that question.', statusCode };
   }
 
   /**
@@ -1764,6 +2144,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   return {
     ask,
+    askStream,
     getStatus,
     isIndexing,
     indexNow,
@@ -1780,8 +2161,16 @@ function createRag({ db, uploadDirectory, logger = console }) {
   };
 }
 
+// Writes one server-sent event. The named events ("sources", "token", "final",
+// "done", "error") keep the browser handler switch-like instead of positional.
+// Lives at module level because the SSE route is owned by server.js.
+function streamEvent(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 module.exports = {
   createRag,
+  streamEvent,
   extractPdfText,
   ocrPdfPages,
   ocrMissingTextPages,
@@ -1791,6 +2180,8 @@ module.exports = {
   historyBlock,
   standaloneQuestion,
   cleanAnswerText,
+  stripThinking,
+  streamOllamaChat,
   keywordQueryFromQuestion,
   AiServiceError,
   getConfig

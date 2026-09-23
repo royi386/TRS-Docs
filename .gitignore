@@ -6,5 +6,12 @@ smi_tc.db
 /feedback-uploads
 .env
 
+# Throwaway debug scripts and test artifacts
+.tmp-*
+vector.pdf
+
+# OCR language data downloaded at runtime
+/.ocr-cache/
+
 # Secret env file that pairs with docker-compose.yml
 !docker-compose.yml

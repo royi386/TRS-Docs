@@ -739,8 +739,8 @@ async function loadLibrary() {
   function formatChatText(value) {
     return escapeHtml(value)
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/^[-*]\s+/gm, '\u2022 ')
-      .replace(/\[(\d+)\]/g, '<b class="chat-citation">[$1]</b>');
+      .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+      .replace(/^[-*]\s+/gm, '\u2022 ');
   }
 
   function addMessage(className, text, { record = false } = {}) {
@@ -876,6 +876,31 @@ async function loadLibrary() {
     addSuggestions();
   }
 
+  // Live-updating bubble for a streamed answer. Re-rendered with the same
+  // formatter as finished messages, so the look never flips on completion.
+  function addStreamingMessage() {
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-message chat-message-bot';
+    bubble.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
+    messages.appendChild(bubble);
+    messages.scrollTop = messages.scrollHeight;
+    return {
+      update(fullText) {
+        if (!fullText) return;
+        bubble.innerHTML = formatChatText(fullText);
+        // Follow the stream only while the reader is near the bottom, so
+        // scrolling up to re-read something is not yanked back by each token.
+        const gap = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+        if (gap < 120) messages.scrollTop = messages.scrollHeight;
+      },
+      finish(fullText) {
+        if (fullText) bubble.innerHTML = formatChatText(fullText);
+        messages.scrollTop = messages.scrollHeight;
+      },
+      remove() { bubble.remove(); }
+    };
+  }
+
   async function sendQuestion(question) {
     if (isSending) return;
     const text = String(question || '').trim();
@@ -892,13 +917,87 @@ async function loadLibrary() {
     let payload = null;
     let ok = false;
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: text, history: chatHistory.slice(0, -1) })
       });
-      ok = response.ok;
-      payload = await response.json().catch(() => null);
+      if (response.ok && response.headers.get('Content-Type')?.includes('text/event-stream')) {
+        // Streamed reply: source chips appear as soon as retrieval has picked
+        // the passages, then the answer is appended token by token as the model
+        // writes it, instead of one lump message after the whole wait.
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamText = '';
+        let finalAnswer = null;
+        let streamError = null;
+        let sawDone = false;
+        let sawContent = false;
+        let streamBubble = null;
+        const handleEvent = (eventName, data) => {
+          if (eventName === 'sources') {
+            sawContent = true;
+            if (typing.isConnected) typing.remove();
+            addSources(data.sources);
+            if (!streamBubble) streamBubble = addStreamingMessage();
+          } else if (eventName === 'token') {
+            sawContent = true;
+            if (typing.isConnected) typing.remove();
+            if (!streamBubble) streamBubble = addStreamingMessage();
+            streamText += data.text || '';
+            streamBubble.update(streamText);
+          } else if (eventName === 'final') {
+            finalAnswer = data.answer || streamText || null;
+          } else if (eventName === 'error') {
+            streamError = data.error || 'The assistant could not answer that question.';
+          } else if (eventName === 'done') {
+            sawDone = true;
+          }
+        };
+        while (true) {
+          const { done: readerDone, value } = await reader.read();
+          if (readerDone) break;
+          buffer += decoder.decode(value, { stream: true });
+          let separator = buffer.indexOf('\n\n');
+          while (separator !== -1) {
+            const rawEvent = buffer.slice(0, separator);
+            buffer = buffer.slice(separator + 2);
+            separator = buffer.indexOf('\n\n');
+            let eventName = 'message';
+            const dataLines = [];
+            rawEvent.split('\n').forEach(line => {
+              if (line.startsWith('event:')) eventName = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            });
+            if (!dataLines.length) continue;
+            let data = null;
+            try { data = JSON.parse(dataLines.join('\n')); } catch { data = null; }
+            if (data) handleEvent(eventName, data);
+          }
+        }
+        if (streamError) {
+          if (streamBubble) streamBubble.remove();
+          ok = false;
+          payload = { error: streamError };
+        } else if (sawContent) {
+          const answerText = finalAnswer || streamText || 'No answer was returned.';
+          if (streamBubble) streamBubble.finish(answerText);
+          const last = chatHistory[chatHistory.length - 1];
+          if (last && !last.answer) last.answer = answerText;
+          ok = true;
+          payload = { answer: answerText };
+        } else {
+          // Stream opened but carried nothing usable.
+          ok = false;
+          payload = { error: 'The assistant could not answer that question. Please try again.' };
+        }
+      } else {
+        // Plain JSON reply (an error, an old server, or a proxy that buffered
+        // the stream), so the chat still works end to end without streaming.
+        ok = response.ok;
+        payload = await response.json().catch(() => null);
+      }
     } catch (error) {
       console.error('Chat request failed:', error);
     }
@@ -910,7 +1009,9 @@ async function loadLibrary() {
     } else if (!ok) {
       addMessage('chat-message-error', payload.error || 'The assistant could not answer that question.');
       chatHistory.pop();
-    } else {
+    } else if (payload.sources) {
+      // Fallback path only: the streamed path has already rendered its message
+      // bubble and source chips live, so adding them again would duplicate.
       addMessage('chat-message-bot', payload.answer || 'No answer was returned.', { record: true });
       addSources(payload.sources);
     }
