@@ -630,6 +630,18 @@ async function loadLibrary() {
                 <label>Document number<input name=\"documentNumber\" required></label>
                 <label>Caption<textarea name=\"caption\" rows=\"3\" required></textarea></label>
                 <label>Keywords<input name=\"keywords\" placeholder=\"e.g. traction motor, axle, inspection\"></label>
+                <div class=\"chunk-review-block\">
+                  <div class=\"chunk-review-header\">
+                    <strong>Retrieved text chunks</strong>
+                    <span class=\"chunk-review-hint\">What the assistant reads from this PDF. Edit freely — pages are kept as --- Page N --- separators.</span>
+                  </div>
+                  <textarea class=\"chunk-editor\" name=\"chunkEditor\" rows=\"12\" placeholder=\"Open the form to load the text chunks stored for this document…\"></textarea>
+                  <div class=\"chunk-review-actions\">
+                    <button class=\"text-button reload-chunks-btn\" type=\"button\">Reload from server</button>
+                    <label class=\"checkbox-field final-checkbox\"><input type=\"checkbox\" name=\"finalChunk\"> Final — never re-index this PDF</label>
+                  </div>
+                  <p class=\"chunk-review-status status\" aria-live=\"polite\"></p>
+                </div>
                 <div class=\"edit-form-actions\">
                   <button class=\"button button-primary\" type=\"submit\">Save changes</button>
                   <button class=\"text-button cancel-edit-btn\" type=\"button\">Cancel</button>
@@ -654,8 +666,35 @@ async function loadLibrary() {
             form.querySelector('.edit-status').textContent = '';
             form.classList.remove('hidden');
             form.elements.documentType.focus();
+            loadChunkReview(form, btn.dataset.id);
           });
         });
+
+        // Loads the stored text chunks of a document into the review box and
+        // shows the current final flag. Kept forgiving: when the assistant is
+        // not configured, the box just says so and the metadata form works.
+        async function loadChunkReview(form, id) {
+          const editor = form.querySelector('.chunk-editor');
+          const checkbox = form.querySelector('input[name="finalChunk"]');
+          const status = form.querySelector('.chunk-review-status');
+          status.textContent = 'Loading text chunks…';
+          try {
+            const response = await api(`/api/documents/${id}/chunks`);
+            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to load chunks');
+            const state = await response.json();
+            editor.value = state.chunks.length
+              ? state.chunks.map(chunk => `--- Page ${chunk.page || '?'} ---\n${chunk.content}`).join('\n\n')
+              : '';
+            editor.placeholder = state.chunks.length ? '' : 'No text chunks are stored for this document yet.';
+            checkbox.checked = Boolean(state.final);
+            status.textContent = state.chunks.length ? `${state.chunks.length} chunk(s) stored.` : 'No text chunks are stored for this document yet.';
+          } catch (err) {
+            console.error(err);
+            editor.value = '';
+            checkbox.checked = false;
+            status.textContent = err.message;
+          }
+        }
         libraryList.querySelectorAll('.edit-document-form').forEach(form => {
           form.addEventListener('submit', async event => {
             event.preventDefault();
@@ -678,6 +717,7 @@ async function loadLibrary() {
                 body: JSON.stringify({ documentType, documentNumber, caption, keywords })
               });
               if (!response.ok) throw new Error('Failed to update document');
+              await saveChunkReview(form, id, editStatus);
               loadLibrary();
             } catch (err) {
               console.error(err);
@@ -685,8 +725,47 @@ async function loadLibrary() {
             }
           });
         });
+
+        // Sends the edited chunk text back to the server together with the
+        // final flag. Nothing is sent while the box still shows the loading
+        // state, so a slow chunk fetch can never wipe the stored passages.
+        async function saveChunkReview(form, id, editStatus) {
+          const editor = form.querySelector('.chunk-editor');
+          const checkbox = form.querySelector('input[name="finalChunk"]');
+          const status = form.querySelector('.chunk-review-status');
+          if (status.textContent === 'Loading text chunks…') {
+            editStatus.textContent = 'Chunks were still loading; only metadata was saved.';
+            return;
+          }
+          status.textContent = 'Saving text chunks…';
+          try {
+            const chunks = editor.value.split(/^---\s*Page\s+\d+\s*---\s*$/m)
+              .map(section => {
+                const pageMatch = section.match(/^---\s*Page\s+(\d+)\s*---/);
+                return { page: pageMatch ? Number(pageMatch[1]) : 0, content: section.replace(/^---\s*Page\s+\d+\s*---/, '').trim() };
+              })
+              .filter(chunk => chunk.content);
+            const response = await api(`/api/documents/${id}/chunks`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chunks, final: checkbox.checked })
+            });
+            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to save chunks');
+            status.textContent = checkbox.checked ? 'Text saved and marked final.' : 'Text saved.';
+          } catch (err) {
+            console.error(err);
+            status.textContent = `Failed to save text chunks: ${err.message}`;
+            throw err;
+          }
+        }
         libraryList.querySelectorAll('.cancel-edit-btn').forEach(btn => {
           btn.addEventListener('click', () => btn.closest('.edit-document-form').classList.add('hidden'));
+        });
+        libraryList.querySelectorAll('.reload-chunks-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const form = btn.closest('.edit-document-form');
+            loadChunkReview(form, form.dataset.id);
+          });
         });
         libraryList.querySelectorAll('.delete-btn').forEach(btn => {
           btn.addEventListener('click', async () => {

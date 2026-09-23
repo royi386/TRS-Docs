@@ -1218,6 +1218,13 @@ function createRag({ db, uploadDirectory, logger = console }) {
   } catch (error) {
     if (!error.message.includes('duplicate column name')) throw error;
   }
+  // A file marked final by an admin: its stored chunks are taken as read and
+  // every later indexing pass skips it.
+  try {
+    db.exec('ALTER TABLE rag_documents ADD COLUMN final INTEGER NOT NULL DEFAULT 0');
+  } catch (error) {
+    if (!error.message.includes('duplicate column name')) throw error;
+  }
 
   const statements = {
     getDocumentMeta: db.prepare(`
@@ -1231,7 +1238,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
     listIndexedSources: db.prepare('SELECT source, size, modified_ms, status FROM rag_documents'),
     // Problem files first, then OCR-rescued scans, then the rest alphabetically.
     listFiles: db.prepare(`
-      SELECT source, document_number, title, page_count, chunk_count, status, ocr_pages AS ocrPages, error, indexed_at AS indexedAt
+      SELECT source, document_number, title, page_count, chunk_count, status, ocr_pages AS ocrPages, final, error, indexed_at AS indexedAt
       FROM rag_documents
       ORDER BY status <> 'indexed', ocr_pages > 0 DESC, source COLLATE NOCASE
     `),
@@ -1254,6 +1261,35 @@ function createRag({ db, uploadDirectory, logger = console }) {
         ocr_pages = excluded.ocr_pages,
         indexed_at = CURRENT_TIMESTAMP
     `),
+    // Only the columns a final file legitimately updates on rescan. final and
+    // the stored chunks are untouched, so an admin's review survives.
+    upsertDocumentKeepFinal: db.prepare(`
+      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, final, indexed_at)
+      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages,
+        COALESCE((SELECT final FROM rag_documents WHERE source = @source), 0), CURRENT_TIMESTAMP)
+      ON CONFLICT(source) DO UPDATE SET
+        document_id = excluded.document_id,
+        title = excluded.title,
+        document_number = excluded.document_number,
+        document_type = excluded.document_type,
+        size = excluded.size,
+        modified_ms = excluded.modified_ms,
+        page_count = excluded.page_count,
+        chunk_count = excluded.chunk_count,
+        content_chars = excluded.content_chars,
+        status = excluded.status,
+        error = excluded.error,
+        embedding_model = excluded.embedding_model,
+        ocr_pages = excluded.ocr_pages,
+        indexed_at = CURRENT_TIMESTAMP
+    `),
+    setFinal: db.prepare('UPDATE rag_documents SET final = ? WHERE source = ?'),
+    getFinal: db.prepare('SELECT final FROM rag_documents WHERE source = ?'),
+    isFinal: db.prepare('SELECT final FROM rag_documents WHERE source = ? AND final = 1'),
+    listChunks: db.prepare('SELECT id, page, chunk_index AS chunkIndex, content FROM rag_chunks WHERE source = ? ORDER BY page, chunk_index'),
+    // Metadata edits (caption, document number) must reach the passage headers
+    // even for final files, whose chunks are never re-read from the PDF.
+    updateCitation: db.prepare('UPDATE rag_documents SET document_id = ?, title = ?, document_number = ?, document_type = ? WHERE source = ?'),
     deleteChunks: db.prepare('DELETE FROM rag_chunks WHERE source = ?'),
     deleteDocument: db.prepare('DELETE FROM rag_documents WHERE source = ?'),
     insertChunk: db.prepare(`
@@ -1302,23 +1338,129 @@ function createRag({ db, uploadDirectory, logger = console }) {
     invalidateCache();
   }
 
+  /* ---------------- admin chunk review ---------------- */
+
+  /** The stored passages of one file, for the admin's review box. */
+  function getFileState(source) {
+    const record = statements.getIndexedDocument.get(source);
+    return {
+      source,
+      indexed: Boolean(record),
+      final: Boolean(record && record.final),
+      status: record ? record.status : null,
+      chunks: statements.listChunks.all(source)
+    };
+  }
+
+  /**
+   * Replaces every stored passage of a file with the admin's edited list and
+   * re-embeds it, so retrieval follows the reviewed text rather than whatever
+   * extraction produced. Optionally records the admin's final verdict in the
+   * same transaction. Chunks arrive as [{ page, content }]; pages come from
+   * the "--- Page N ---" separators the editor shows and are kept for citations.
+   */
+  async function saveChunks(source, { chunks, final = null } = {}) {
+    if (!Array.isArray(chunks)) throw new Error('chunks must be an array');
+    const cleaned = [];
+    for (const chunk of chunks.slice(0, 500)) {
+      const page = Number.isFinite(Number(chunk?.page)) && Number(chunk.page) > 0 ? Math.round(Number(chunk.page)) : 0;
+      const content = String(chunk?.content || '').replace(/\r\n/g, '\n').trim();
+      if (content) cleaned.push({ page, content: content.slice(0, 20000) });
+    }
+
+    const metadata = documentMetadata(source);
+    let fileStat = null;
+    try {
+      fileStat = fs.statSync(path.join(uploadDirectory, source));
+    } catch { /* the PDF may be gone; the reviewed chunks stay anyway */ }
+    const existing = statements.getIndexedDocument.get(source);
+    const config = getConfig();
+    const modelId = embeddingModelId(config);
+    const embeddings = cleaned.length ? await embedTexts(cleaned.map(chunk => chunk.content), 'RETRIEVAL_DOCUMENT') : [];
+
+    const base = {
+      source,
+      document_id: metadata?.id || null,
+      title: metadata?.caption || source,
+      document_number: metadata?.document_number || '',
+      document_type: metadata?.document_type || '',
+      size: fileStat?.size || 0,
+      modified_ms: fileStat ? Math.round(fileStat.mtimeMs) : 0,
+      page_count: existing?.page_count || 0,
+      content_chars: cleaned.reduce((total, chunk) => total + chunk.content.length, 0),
+      embedding_model: modelId,
+      ocr_pages: existing?.ocr_pages || 0
+    };
+
+    db.transaction(() => {
+      statements.deleteChunks.run(source);
+      cleaned.forEach((chunk, index) => {
+        const vector = embeddings[index];
+        statements.insertChunk.run(
+          source,
+          base.document_id,
+          chunk.page,
+          index,
+          chunk.content,
+          vectorToBuffer(vector),
+          modelId,
+          vector.length
+        );
+      });
+      statements.upsertDocumentKeepFinal.run({
+        ...base,
+        chunk_count: cleaned.length,
+        status: cleaned.length ? 'indexed' : 'no-text',
+        error: cleaned.length ? '' : 'No passages provided by the admin review'
+      });
+      if (final !== null) statements.setFinal.run(final ? 1 : 0, source);
+    })();
+    invalidateCache();
+    logger.log(`[rag] ${source}: admin saved ${cleaned.length} passage(s)${final === null ? '' : final ? ', marked final' : ', unmarked final'}`);
+    return getFileState(source);
+  }
+
+  /** Marks a file final (or releases it) without touching its chunks. */
+  function setFileFinal(source, final) {
+    if (!statements.getFinal.get(source)) throw new Error('This file has no index record yet, so it cannot be marked final');
+    statements.setFinal.run(final ? 1 : 0, source);
+    invalidateCache();
+    logger.log(`[rag] ${source}: ${final ? 'marked final' : 'unmarked final'}`);
+    return Boolean(final);
+  }
+
   async function indexFile(source, { force = false, knownStat = null, reason = 'scan' } = {}) {
     const filePath = path.join(uploadDirectory, source);
     let fileStat;
     try {
       fileStat = knownStat || fs.statSync(filePath);
     } catch {
-      removeFile(source);
-      return { source, status: 'removed' };
+      // A final file whose PDF vanished keeps its record (and its chunks stay
+      // answerable) — the admin reviewed it, so a missing file is not a reason
+      // to drop it. Non-final files are cleaned up as before.
+      const finalRow = statements.getFinal.get(source);
+      if (!finalRow || !finalRow.final) removeFile(source);
+      return { source, status: finalRow && finalRow.final ? 'final-unchanged' : 'removed' };
     }
 
     const metadata = documentMetadata(source);
+
+    // A final file is admin-approved: skip every form of re-indexing (rescan,
+    // force rebuild, upload re-index) so the reviewed chunks stay as they are.
+    if (statements.isFinal.get(source)) {
+      // Metadata edits still need to reach the citations (the document number
+      // and caption shown in passage headers), so refresh those fields only.
+      if (metadata) {
+        statements.updateCitation.run(metadata.id, metadata.caption || source, metadata.document_number || '', metadata.document_type || '', source);
+      }
+      return { source, status: 'final-unchanged' };
+    }
 
     // Document types that need a login stay out of the index so the chatbot
     // cannot answer from restricted content.
     if (isRestricted(metadata)) {
       statements.deleteChunks.run(source);
-      statements.upsertDocument.run({
+      statements.upsertDocumentKeepFinal.run({
         source,
         document_id: metadata.id,
         title: metadata.caption || source,
@@ -1453,9 +1595,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
     const files = listPdfFiles();
     const indexedSources = new Set(statements.listIndexedSources.all().map(row => row.source));
 
-    // Drop records for PDFs that are no longer in the folder.
+    // Drop records for PDFs that are no longer in the folder. A final file
+    // keeps its record (and its answerable chunks) even if the PDF vanishes:
+    // the admin reviewed those passages, so they stay until removed by hand.
     for (const source of indexedSources) {
-      if (!files.includes(source)) removeFile(source);
+      if (!files.includes(source)) {
+        if (statements.isFinal.get(source)) continue;
+        removeFile(source);
+      }
     }
 
     const results = [];
@@ -2153,6 +2300,9 @@ function createRag({ db, uploadDirectory, logger = console }) {
     // are re-checked before the skip logic runs.
     indexFile: (source, options = {}) => indexFile(source, { force: false, reason: 'upload', ...options }),
     removeFile,
+    getFileState,
+    saveChunks,
+    setFileFinal,
     start,
     stop,
     isEnabled: () => isConfigured(getConfig()),

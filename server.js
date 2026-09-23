@@ -891,6 +891,50 @@ app.get('/api/feedback/:id/download', requireAdmin, (req, res) => {
   res.download(filePath, submission.original_name);
 });
 
+// Admin chunk review: the stored passages of one file and its final flag, for
+// the review box in the document edit form.
+app.get('/api/documents/:id/chunks', requireAdmin, (req, res) => {
+  if (!rag.isEnabled()) return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  const doc = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  res.json(rag.getFileState(doc.filename));
+});
+
+// Admin chunk review: replace the stored passages with the edited text and
+// re-embed them, optionally marking the file final in the same request. A
+// final file is never re-read from the PDF by later indexing passes.
+app.put('/api/documents/:id/chunks', requireAdmin, async (req, res) => {
+  if (!rag.isEnabled()) return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  const doc = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  const chunks = Array.isArray(req.body?.chunks) ? req.body.chunks : null;
+  if (!chunks) return res.status(400).json({ error: 'chunks must be an array of { page, content }' });
+  if (req.body.final !== undefined && typeof req.body.final !== 'boolean') {
+    return res.status(400).json({ error: 'final must be true or false' });
+  }
+  try {
+    const state = await rag.saveChunks(doc.filename, { chunks, final: req.body.final === undefined ? null : req.body.final });
+    res.json(state);
+  } catch (error) {
+    console.error('Saving chunks failed:', error);
+    res.status(500).json({ error: error.message || 'Unable to save the reviewed text' });
+  }
+});
+
+// Admin: mark or release a file without touching its chunks.
+app.put('/api/documents/:id/final', requireAdmin, (req, res) => {
+  if (!rag.isEnabled()) return res.status(503).json({ error: 'The library assistant is not configured on this server.' });
+  const doc = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  if (typeof req.body?.final !== 'boolean') return res.status(400).json({ error: 'final must be true or false' });
+  try {
+    rag.setFileFinal(doc.filename, req.body.final);
+    res.json({ success: true, final: req.body.final });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.patch('/api/documents/:id', requireAdmin, (req, res) => {
   const documentType = typeof req.body.documentType === 'string' ? req.body.documentType.trim() : '';
   const documentNumber = typeof req.body.documentNumber === 'string' ? req.body.documentNumber.trim() : '';
