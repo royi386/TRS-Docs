@@ -89,6 +89,39 @@
     
   }
   window.addEventListener('hashchange', updatePageFromHash);
+
+  // ---- Android back-button handling for the installed (standalone) app ----
+  // In a browser, opening a document or the chat keeps a back stack, but the
+  // installed app has no tabs: without help the hardware back button closes
+  // the whole app. Every overlay (chat panel, in-app PDF viewer) pushes a
+  // history entry when it opens; back then closes only the topmost overlay.
+  // The entry stores the stack depth so closing one overlay never closes the
+  // one beneath it.
+  const overlayStack = []; // One item per open overlay: { name, close(), open }.
+  function openOverlay(name, closeFn) {
+    overlayStack.push({ name, close: closeFn, open: true });
+    history.pushState({ overlay: overlayStack.length }, '', location.href);
+  }
+  function closeOverlayFromUi() {
+    const overlay = overlayStack[overlayStack.length - 1];
+    if (!overlay || !overlay.open) return;
+    overlayStack.pop();
+    overlay.close();
+    // Consume the history entry this overlay pushed, so the next back press
+    // does not try to close it again.
+    if (history.state && history.state.overlay) history.back();
+  }
+  window.addEventListener('popstate', event => {
+    // event.state.overlay is the stack depth of the entry we landed on;
+    // anything deeper in the stack has lost its history entry and must close.
+    const depth = event.state && event.state.overlay ? event.state.overlay : 0;
+    while (overlayStack.length > depth) {
+      const overlay = overlayStack.pop();
+      if (overlay.open) overlay.close();
+    }
+  });
+  // On a fresh load Chrome can restore an overlay history entry; clean it up.
+  if (history.state && history.state.overlay) history.replaceState(null, '', location.href);
   const libraryMode = document.getElementById('libraryMode');
   libraryMode.addEventListener('change', () => {
     location.hash = libraryMode.value === 'drawings' ? '#drawings' : libraryMode.value === 'pneumatic' ? '#pneumatic' : '#search';
@@ -196,8 +229,27 @@
       console.error('PDF render failed:', error);
     }
   }
-  function openPdfViewer(id, name) { activePdf = { id, name }; viewerTitle.textContent = name; viewerDownload.href = `/api/download/${id}`; pdfViewer.classList.remove('hidden'); searchPage.classList.add('viewer-open'); renderPdf(id); }
-  function closePdfViewer() { activePdf = { id: '', name: '' }; pdfRenderRequest += 1; pdfPages.innerHTML = ''; pdfViewer.classList.add('hidden'); searchPage.classList.remove('viewer-open'); }
+  function openPdfViewer(id, name) {
+    const wasHidden = pdfViewer.classList.contains('hidden');
+    activePdf = { id, name };
+    viewerTitle.textContent = name;
+    viewerDownload.href = `/api/download/${id}`;
+    pdfViewer.classList.remove('hidden');
+    searchPage.classList.add('viewer-open');
+    renderPdf(id);
+    // Hardware back then closes the viewer instead of leaving the app.
+    if (wasHidden && typeof openOverlay === 'function') openOverlay('pdf-viewer', closePdfViewer);
+  }
+  function closePdfViewer() {
+    activePdf = { id: '', name: '' };
+    pdfRenderRequest += 1;
+    pdfPages.innerHTML = '';
+    pdfViewer.classList.add('hidden');
+    searchPage.classList.remove('viewer-open');
+    // If the viewer was opened from a chat source chip, bring the chat back.
+    const suspendedChat = document.getElementById('chatPanel');
+    if (suspendedChat && suspendedChat.classList.contains('chat-suspended')) { suspendedChat.classList.remove('chat-suspended'); suspendedChat.hidden = false; }
+  }
   async function sharePdf() {
     if (!activePdf.id) return;
     const pdfUrl = new URL(`/api/view/${activePdf.id}`, window.location.href).href;
@@ -227,7 +279,7 @@
   }
   document.getElementById('results').addEventListener('click', event => { const result = event.target.closest('.result'); if (result) openPdfViewer(result.dataset.documentId, result.dataset.documentName); });
   document.getElementById('results').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { const result = event.target.closest('.result'); if (result) { event.preventDefault(); openPdfViewer(result.dataset.documentId, result.dataset.documentName); } } });
-  document.getElementById('closeViewer').addEventListener('click', closePdfViewer);
+  document.getElementById('closeViewer').addEventListener('click', () => (typeof closeOverlayFromUi === 'function' ? closeOverlayFromUi() : closePdfViewer()));
   viewerShare.addEventListener('click', sharePdf);
   document.getElementById('feedbackList').addEventListener('click', async event => {
     const downloadButton = event.target.closest('.feedback-download');
@@ -878,8 +930,25 @@ async function loadLibrary() {
       chip.className = 'chat-source';
       if (source.documentId) {
         chip.href = `/api/view/${source.documentId}`;
-        chip.target = '_blank';
-        chip.rel = 'noopener noreferrer';
+        // In the installed (standalone) app there are no browser tabs, so a
+        // new-tab link would leave the chat behind and hardware back would
+        // exit the app. Open the PDF in the in-app viewer instead; back then
+        // returns straight to the conversation. In a normal browser keep the
+        // new-tab behaviour.
+        const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+        if (standalone) {
+          chip.addEventListener('click', event => {
+            event.preventDefault();
+            // Hide the chat but keep it registered, so closing the viewer
+            // (back button or "Back to results") reopens the conversation.
+            if (!panel.hidden) { panel.classList.add('chat-suspended'); panel.hidden = true; }
+            if (!searchSection.classList.contains('active')) showPage('search');
+            openPdfViewer(source.documentId, label);
+          });
+        } else {
+          chip.target = '_blank';
+          chip.rel = 'noopener noreferrer';
+        }
       }
       const title = document.createElement('b');
       title.textContent = label;
@@ -1100,18 +1169,25 @@ async function loadLibrary() {
     input.focus();
   }
 
+  // The chat registers itself with the back-button overlay handler every time
+  // it opens, so hardware back closes the panel instead of leaving the app.
+  let chatOverlayRegistered = false;
   function setOpen(isOpen) {
     panel.hidden = !isOpen;
     toggleButton.setAttribute('aria-expanded', String(isOpen));
     toggleButton.classList.toggle('hidden', isOpen);
     positionToggle();
+    if (isOpen && !chatOverlayRegistered && typeof openOverlay === 'function') {
+      chatOverlayRegistered = true;
+      openOverlay('chat', () => { chatOverlayRegistered = false; setOpen(false); });
+    }
     if (!isOpen) return;
     if (!assistantReady) prepareAssistant();
     window.setTimeout(() => input.focus(), 60);
   }
 
   toggleButton.addEventListener('click', () => setOpen(panel.hidden));
-  closeButton.addEventListener('click', () => setOpen(false));
+  closeButton.addEventListener('click', () => (typeof closeOverlayFromUi === 'function' ? closeOverlayFromUi() : setOpen(false)));
   form.addEventListener('submit', event => { event.preventDefault(); sendQuestion(input.value); });
   input.addEventListener('input', () => {
     input.style.height = 'auto';
@@ -1124,7 +1200,7 @@ async function loadLibrary() {
     }
   });
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !panel.hidden) setOpen(false);
+    if (event.key === 'Escape' && !panel.hidden) { if (typeof closeOverlayFromUi === 'function') closeOverlayFromUi(); else setOpen(false); }
   });
   window.addEventListener('resize', positionToggle);
   window.addEventListener('hashchange', positionToggle);
