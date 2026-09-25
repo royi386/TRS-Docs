@@ -95,7 +95,7 @@ try {
   if (!error.message.includes('duplicate column name')) throw error;
 }
 const addDocumentType = db.prepare('INSERT OR IGNORE INTO document_types (name, requires_login) VALUES (?, ?)');
-['SMI', 'MS', 'TC', 'Drawings'].forEach(name => addDocumentType.run(name, name === 'Drawings' ? 1 : 0));
+['SMI', 'MS', 'TC', 'Drawings', 'Others'].forEach(name => addDocumentType.run(name, name === 'Drawings' ? 1 : 0));
 if (addedDocumentTypeLoginColumn) db.prepare("UPDATE document_types SET requires_login = 1 WHERE name = 'Drawings'").run();
 db.prepare(`
   INSERT OR IGNORE INTO document_types (name)
