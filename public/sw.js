@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rail-docs-shell-v17';
+const CACHE_NAME = 'rail-docs-shell-v18';
 const APP_SHELL = [
   '/',
   '/index.html',
