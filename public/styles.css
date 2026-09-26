@@ -22,7 +22,7 @@ a { color: inherit; text-decoration: none; }
 .page { display: none; animation: rise .45s ease both; }
 .page.active { display: block; }
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-.page-credit { margin: -4px 0 0; color: var(--muted); font-size: .95rem; }.eyebrow { color: var(--orange); font: 700 .72rem 'Space Grotesk', sans-serif; letter-spacing: .14em; text-transform: uppercase; }
+.page-credit { margin: -4px 0 0; color: #000; font-size: .95rem; font-weight: 700; }.eyebrow { color: var(--orange); font: 700 .72rem 'Space Grotesk', sans-serif; letter-spacing: .14em; text-transform: uppercase; }
 .library-mode-picker { width: min(100%, 280px); margin-top: 18px; }.library-mode-picker select { margin-top: 2px; }.under-construction { max-width: 540px; }.under-construction .button { display: inline-flex; align-items: center; margin-top: 8px; }
 #drawingsLoginForm { display: grid; gap: 18px; }.field-hint { color: var(--muted); font-weight: 400; }
 .checkbox-field { display: flex; align-items: center; gap: 9px; cursor: pointer; }.checkbox-field input { width: auto; padding: 0; }
