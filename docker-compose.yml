@@ -9,49 +9,36 @@ services:
       - "3000:3000"
 
     environment:
-      # Set the real password in the .env file next to this compose file.
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      ADMIN_PASSWORD: 12345678
       PORT: 3000
       DB_PATH: /app/data/smi_tc.db
       UPLOAD_DIR: /app/uploads
 
-      # "ollama" runs the AI on this server. "gemini" uses a hosted API key.
       AI_PROVIDER: ${AI_PROVIDER:-ollama}
       OLLAMA_BASE_URL: http://ollama:11434
 
-      # --- Local models (AI_PROVIDER=ollama) ---
-      # These two together need about 1.7 GB, so Immich keeps its memory.
-      # Bigger models answer better but are slow on a CPU-only box: see README.
+      # --- Local models ---
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
-      # --- Hosted option (AI_PROVIDER=gemini) ---
-      # Set GEMINI_API_KEY to use Google's free tier instead of local AI.
-
       RAG_RESCAN_INTERVAL_MS: 300000
 
-      # --- OCR for scanned PDFs (on by default) ---
-      # Scanned PDFs with no text layer are rasterised and read with Tesseract
-      # so the assistant can answer from them too. Language data (a few MB)
-      # downloads once into the cache folder below; point RAG_OCR_LANG_PATH at
-      # a mounted folder holding <lang>.traineddata.gz for offline servers.
+      # --- OCR ---
       RAG_OCR: "1"
-      # eng+hin: the library holds scanned documents in both English and Hindi;
-      # drop hin (or add other codes, e.g. tam) if not needed.
       RAG_OCR_LANGS: eng+hin
       RAG_OCR_CACHE_DIR: /app/ocr-cache
-      # RAG_OCR_LANG_PATH: /app/ocr-langs
-      # RAG_OCR_MAX_PAGES: 40
-      # RAG_OCR_DPI_SCALE: 2
-      # OCR parallelism: 0 (the default) uses one worker per core minus one, so
-      # indexing saturates the CPU like answering questions does. Cap it if the
-      # server feels busy while indexing (e.g. RAG_OCR_WORKERS: 4).
-      # RAG_OCR_WORKERS: 0
+      # OCR documents up to this many pages (some scans run to hundreds).
+      RAG_OCR_MAX_PAGES: "800"
+      # OCR every page (not just pages with no text layer): scanner text layers
+      # often hold only a watermark like "Scanned by CamScanner".
+      RAG_OCR_ALL: "1"
+      # Keep the native text layer alongside the OCR reading of the same page.
+      RAG_OCR_MERGE_LAYER: "1"
 
     volumes:
-      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/data:/app/data
-      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/uploads:/app/uploads
-      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/ocr-cache:/app/ocr-cache
+      - D:/TRS_Docs/data:/app/data
+      - D:/TRS_Docs/uploads:/app/uploads
+      - D:/TRS_Docs/ocr-cache:/app/ocr-cache
 
     depends_on:
       - ollama
@@ -62,24 +49,15 @@ services:
     restart: unless-stopped
 
     volumes:
-      # Models live on the data disk next to the PDFs.
-      - /srv/dev-disk-by-uuid-92D8D25FD8D24161/TRS_Docs/ollama:/root/.ollama
+      # Ollama models are stored on the Windows D: drive.
+      - D:/TRS_Docs/ollama:/root/.ollama
 
     environment:
-      # Keep the chat and embedding model resident, but never load a third.
       OLLAMA_MAX_LOADED_MODELS: "2"
-      # 2 lets a question be answered while an embedding batch runs. Raise to
-      # 3-4 if several people ask questions at the same time.
-      OLLAMA_NUM_PARALLEL: 5
+      OLLAMA_NUM_PARALLEL: "5"
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-300m}
-      # Cap inference threads so Ollama leaves headroom for the app and the OCR
-      # workers instead of grabbing every core during a question.
       OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-8}
 
-    # A hard ceiling so inference can never starve Immich or the OMV host.
-    # mem_limit: ${OLLAMA_MEM_LIMIT:-3g}
-
-    # Not published to the host: only the app reaches it, over the compose network.
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -87,7 +65,6 @@ services:
       retries: 5
       start_period: 60s
 
-  # One shot helper: downloads the models on first start, then exits.
   ollama-models:
     image: ollama/ollama:latest
     container_name: rail-docs-ollama-models
@@ -101,14 +78,17 @@ services:
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
     entrypoint: ["/bin/sh", "-c"]
+
     command:
       - |
         until ollama list >/dev/null 2>&1; do
           echo "waiting for the ollama service..."
           sleep 3
         done
+
         for model in "$${OLLAMA_EMBED_MODEL}" "$${OLLAMA_CHAT_MODEL}"; do
           echo "downloading $${model}"
           ollama pull "$${model}" || exit 1
         done
+
         echo "models ready"

@@ -36,7 +36,7 @@ Until a key is set the button still appears but reports that the assistant is sw
 * Uploading a document through the Admin page indexes it immediately.
 * A background scan every 5 minutes picks up PDFs copied straight into `uploads`, and removes ones that were deleted.
 * Editing a document's type re-checks it, so moving a document into a login-required type takes it out of the index again. The assistant only ever answers from **public** document types, never from `Drawings`.
-* Scanned PDFs with no text layer are skipped and reported; run them through OCR first if you want them searchable.
+* PDFs with a scanner text layer (CamScanner and friends stamp every page with a watermark) are OCR'd too: pages whose layer is only a stamp are treated as scanned, and by default every page is rasterised and read with OCR, then merged with the text layer. Set `RAG_OCR_ALL=0` to OCR only pages with no layer at all, and `RAG_OCR_MERGE_LAYER=0` to keep OCR and text-layer pages separate.
 
 Useful overrides (set them alongside `GEMINI_API_KEY`):
 
@@ -47,6 +47,8 @@ Useful overrides (set them alongside `GEMINI_API_KEY`):
 | `RAG_TOP_K` | `6` | Passages given to the model per question. |
 | `RAG_RESCAN_INTERVAL_MS` | `300000` | How often `uploads` is rescanned. |
 | `RAG_MIN_SCORE` | `0.3` | Similarity needed before a passage counts as a match. |
+| `RAG_OCR_ALL` | `1` | OCR every page, not only pages with no text layer — scanner text layers often hold just a watermark ("Scanned by CamScanner"). `0` restores the old behaviour. |
+| `RAG_OCR_MERGE_LAYER` | `1` | Keep the PDF text layer alongside the OCR reading of the same page. `0` stores the two separately. |
 
 After changing the embedding model, clear the old vectors and rebuild:
 
