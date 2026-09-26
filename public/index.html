@@ -861,12 +861,6 @@ async function loadLibrary() {
   // their context. Failed turns are dropped so the next question starts clean.
   let chatHistory = [];
 
-  const CHAT_SUGGESTIONS = [
-    'What documents are available?',
-    'Axle bearing inspection procedure',
-    'Traction motor brush wear limit'
-  ];
-
   function formatChatText(value) {
     return escapeHtml(value)
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -893,21 +887,6 @@ async function loadLibrary() {
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
     return bubble;
-  }
-
-  function addSuggestions() {
-    const wrap = document.createElement('div');
-    wrap.className = 'chat-suggestions';
-    CHAT_SUGGESTIONS.forEach(suggestion => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'chat-suggestion';
-      button.textContent = suggestion;
-      button.addEventListener('click', () => { wrap.remove(); sendQuestion(suggestion); });
-      wrap.appendChild(button);
-    });
-    messages.appendChild(wrap);
-    messages.scrollTop = messages.scrollHeight;
   }
 
   function addSources(sources) {
@@ -1018,10 +997,7 @@ async function loadLibrary() {
     const indexed = status.indexedFiles || 0;
     if (!indexed) {
       addMessage('chat-message-bot', 'The library is still being read for the first time. New PDFs are indexed automatically, so please ask again in a few minutes.');
-      return;
     }
-    addMessage('chat-message-bot', `Ask me anything about the ${indexed} document${indexed === 1 ? '' : 's'} in this library. I answer only from their contents and link the PDFs I used.`);
-    addSuggestions();
   }
 
   // Live-updating bubble for a streamed answer. Re-rendered with the same
