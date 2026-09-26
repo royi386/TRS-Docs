@@ -20,11 +20,11 @@
     <section class="page" id="drawingsPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Drawings<br><em>access.</em></h1><div id="drawingsLoginPanel" class="panel"><p>Sign in with your Rail Docs drawings account to access the official SLAM drawings portal.</p><form id="drawingsLoginForm"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="button button-primary" type="submit">Sign in</button><button id="createDrawingsAccountButton" class="text-button" type="button">Create account</button><p id="drawingsLoginStatus" class="status" aria-live="polite"></p></form></div><div id="drawingsAccessPanel" class="panel hidden"><h2>Access verified</h2><p>You can now continue to the official SLAM portal. Sign in there using your SLAM credentials.</p><a class="button button-primary" href="https://slam.indianrail.gov.in/SLAM/Login.aspx" target="_blank" rel="noopener noreferrer">Open SLAM drawings portal</a><button id="drawingsLogoutButton" class="text-button" type="button">Sign out</button></div></section>
     <section class="page" id="drawingsRegisterPage"><div class="eyebrow">Indian Railways / Drawings Library</div><h1>Create<br><em>account.</em></h1><p class="intro">Submit your details for admin approval.</p><form id="drawingsRegisterForm" class="panel"><div class="form-grid"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><label>Name<input name="fullName" maxlength="120" autocomplete="name" required></label><label>Designation<input name="designation" maxlength="120" required></label><label>Division<input name="division" maxlength="120" required></label><label>Phone number<input name="phoneNumber" type="tel" minlength="6" maxlength="30" autocomplete="tel" required></label></div><button class="button button-primary" type="submit">Submit request</button><a class="text-button" href="#drawings">Back to sign in</a><p id="drawingsRegisterStatus" class="status" aria-live="polite"></p></form></section>
     <section class="page" id="drawingsSearchPage"><div class="eyebrow">Indian Railways / Drawings Library</div><h1>Search<br><em>drawings.</em></h1><p class="intro">Search the drawings library by document number, caption, or keyword.</p><button class="text-button drawings-signout-button" type="button">Sign out</button><form id="drawingsSearchForm" class="search-box"><label for="drawingsSearchInput">Document number, caption, or keyword</label><div class="search-row"><input id="drawingsSearchInput" autocomplete="off" placeholder="e.g. drawing number or axle arrangement" required><button class="button button-primary" type="submit">Search drawings</button></div></form><p id="drawingsSearchStatus" class="status" aria-live="polite">Enter a drawing number or keyword to begin.</p><div id="drawingsResults" class="results"></div></section>
-    <section class="page" id="browsePage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Browse the<br><em>library.</em></h1><p class="intro">Every document in the library, grouped by type. Select one to read it here.</p><div class="browse-controls panel"><div class="browse-row"><input id="browseFilter" autocomplete="off" placeholder="Filter by number, caption, or file name"><select id="browseType" data-document-type-select="browse"><option value="">All Types</option></select><select id="browseSort"><option value="date">Newest first</option><option value="number">By document number</option><option value="name">By caption A–Z</option></select></div><p id="browseStatus" class="status" aria-live="polite">Loading the library…</p></div><div id="browseGroups" class="browse-groups"></div></section>
+    <section class="page" id="browsePage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Browse the<br><em>library.</em></h1><p class="intro">Every document in the library, grouped by type. Select one to read it here.</p><div class="browse-controls panel"><div class="browse-row"><input id="browseFilter" autocomplete="off" placeholder="Filter by number, caption, or file name"><select id="browseType" data-document-type-select="browse"><option value="">All Types</option></select><select id="browseSort"><option value="date">Newest first</option><option value="number">By document number</option><option value="name">By caption A–Z</option></select></div><p id="browseStatus" class="status" aria-live="polite">Loading the library…</p></div><div id="browseGroups" class="browse-groups"></div><div id="browsePagination" class="pagination" hidden><button id="browsePrev" class="button button-dark" type="button">Previous</button><span id="browsePageInfo"></span><button id="browseNext" class="button button-dark" type="button">Next</button></div></section>
     <section class="page" id="libraryPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Library</h1><p class="intro">All documents in the library.</p><div id="libraryList"></div></section>
     <section class="page" id="pneumaticPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Pneumatic fault<br><em>details.</em></h1><div class="panel under-construction"><h2>Under construction</h2><p>Pneumatic fault details will be available here soon.</p><a class="button button-primary" href="#search">Back to document search</a></div></section>
     <section class="page" id="feedbackPage"><div id="publicFeedback"><div class="eyebrow">Contact the library</div><h1>Send feedback</h1><p class="intro">Send a message or a file for the library team to review.</p><form id="feedbackForm" class="panel"><label>Your name<input name="senderName" autocomplete="name" required></label><label>Message<textarea name="message" rows="6" required placeholder="Write your message"></textarea></label><label class="file-drop">Optional file<input name="attachment" type="file"></label><button class="button button-primary" type="submit">Send message</button><p id="feedbackStatus" class="status" aria-live="polite"></p></form></div><div id="feedbackInbox" class="hidden"><div class="eyebrow">Admin inbox</div><h1>User feedback</h1><p class="intro">Messages and files submitted by users.</p><div id="feedbackList" class="feedback-list"></div></div></section>
-    <section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section>
+    <section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button><button id="viewerCopyLink" class="text-button" type="button">Copy link</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section>
 
   </main>
   <button id="chatToggle" class="chat-toggle" type="button" aria-label="Ask the library assistant" aria-expanded="false" aria-controls="chatPanel"><span class="chat-toggle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></span><span class="chat-toggle-label">Ask AI</span></button>
@@ -73,6 +73,7 @@
     else if (hash === '#feedback' || hash === '#feedback-admin') page = 'feedback';
     else if (hash === '#pneumatic') page = 'pneumatic';
     else if (hash === '#browse') { page = 'browse'; }
+    else if (hash.startsWith('#document/')) { page = 'browse'; openDocumentFromLink(hash.slice('#document/'.length)); }
     else if (hash === '#drawings') { page = 'drawings'; validateDrawingSession().then(isSignedIn => { if (isSignedIn) location.hash = '#drawings-search'; }); }
     else if (hash === '#drawings-register') page = 'drawingsRegister';
     else if (hash === '#drawings-search') { page = 'drawingsSearch'; validateDrawingSession().then(isSignedIn => { if (!isSignedIn) location.hash = '#drawings'; }); }
@@ -211,9 +212,12 @@
   const browseGroups = document.getElementById('browseGroups');
   let browseDebounce;
   let browseRequestId = 0;
+  let browsePage = 1;
+  let browseTotalPages = 1;
   async function loadBrowse() {
     const requestId = ++browseRequestId;
     const params = new URLSearchParams();
+    params.append('page', String(browsePage));
     const query = browseFilter.value.trim();
     if (query) params.append('q', query);
     if (browseType.value) params.append('type', browseType.value);
@@ -230,30 +234,42 @@
         browseStatus.textContent = data.error || 'Unable to load the library right now.';
         return;
       }
-      const documents = await response.json();
+      const payload = await response.json();
+      const documents = payload.documents || [];
+      browseTotalPages = payload.totalPages || 1;
+      const pagination = document.getElementById('browsePagination');
+      document.getElementById('browsePageInfo').textContent = `Page ${payload.page} of ${browseTotalPages}`;
+      document.getElementById('browsePrev').disabled = payload.page <= 1;
+      document.getElementById('browseNext').disabled = payload.page >= browseTotalPages;
+      pagination.hidden = browseTotalPages <= 1;
       if (!documents.length) {
         browseGroups.innerHTML = '';
         browseStatus.textContent = query || browseType.value ? 'No documents match this filter.' : 'No documents have been uploaded yet.';
         return;
       }
-      browseStatus.textContent = `${documents.length} document${documents.length === 1 ? '' : 's'}`;
+      browseStatus.textContent = `${payload.total} document${payload.total === 1 ? '' : 's'}${query || browseType.value ? ' matching' : ' in the library'}`;
       const groups = new Map();
       documents.forEach(doc => {
         const key = doc.document_type || 'Unsorted';
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(doc);
       });
-      browseGroups.innerHTML = [...groups.entries()].map(([typeName, docs]) => `<section class="browse-group"><h2>${escapeHtml(typeName)} <span>${docs.length}</span></h2><div class="results browse-results">${docs.map(doc => `<article class="result" data-document-id="${doc.id}" data-document-name="${escapeHtml(doc.original_name)}" role="button" tabindex="0"><div><span class="doc-number">${escapeHtml(doc.document_number || 'Unnumbered')}</span><h2>${escapeHtml(doc.caption)}</h2><p>${escapeHtml(doc.original_name)} <span>•</span> ${formatSize(doc.file_size || 0)}</p></div></article>`).join('')}</div></section>`).join('');
+      browseGroups.innerHTML = [...groups.entries()].map(([typeName, docs]) => `<section class="browse-group"><h2>${escapeHtml(typeName)} <span>${docs.length}</span></h2><div class="results browse-results">${docs.map(doc => `<article class="result" data-document-id="${doc.id}" data-document-name="${escapeHtml(doc.original_name)}" role="button" tabindex="0"><div><span class="doc-number">${escapeHtml(doc.document_number || 'Unnumbered')}</span><h2>${escapeHtml(doc.caption)}</h2><p>${escapeHtml(doc.original_name)} <span>•</span> ${formatSize(doc.file_size || 0)}</p></div><span class="doc-link" data-doc-link="${doc.id}" role="button" tabindex="0" title="Copy link to this document">Copy link</span></article>`).join('')}</div></section>`).join('');
     } catch (error) {
       if (requestId === browseRequestId) { browseGroups.innerHTML = ''; browseStatus.textContent = 'The library is temporarily unavailable.'; }
     }
   }
   function openBrowseDocument(id, name) {
+    // Record the document in the URL so the open viewer can be shared or
+    // bookmarked as a plain link to the document.
+    history.replaceState(history.state, '', `#document/${id}`);
     openPdfViewer(id, name);
   }
-  browseFilter.addEventListener('input', () => { clearTimeout(browseDebounce); browseDebounce = setTimeout(loadBrowse, 250); });
-  browseType.addEventListener('change', loadBrowse);
-  browseSort.addEventListener('change', loadBrowse);
+  browseFilter.addEventListener('input', () => { clearTimeout(browseDebounce); browseDebounce = setTimeout(() => { browsePage = 1; loadBrowse(); }, 250); });
+  browseType.addEventListener('change', () => { browsePage = 1; loadBrowse(); });
+  browseSort.addEventListener('change', () => { browsePage = 1; loadBrowse(); });
+  document.getElementById('browsePrev').addEventListener('click', () => { if (browsePage > 1) { browsePage -= 1; loadBrowse(); } });
+  document.getElementById('browseNext').addEventListener('click', () => { if (browsePage < browseTotalPages) { browsePage += 1; loadBrowse(); } });
   browseGroups.addEventListener('click', event => { const card = event.target.closest('.result'); if (card) openBrowseDocument(card.dataset.documentId, card.dataset.documentName); });
   browseGroups.addEventListener('keydown', event => { if (event.key !== 'Enter' && event.key !== ' ') return; const card = event.target.closest('.result'); if (card) { event.preventDefault(); openBrowseDocument(card.dataset.documentId, card.dataset.documentName); } });
 
@@ -285,6 +301,49 @@
       console.error('PDF render failed:', error);
     }
   }
+  // Resolves #document/<id> links shared by other users. The document must
+  // exist and be readable by the current visitor (the HEAD check enforces the
+  // same access rules as opening the file), so restricted documents cannot be
+  // discovered by guessing links.
+  async function openDocumentFromLink(documentId) {
+    const id = String(documentId || '').replace(/[^0-9]/g, '');
+    if (!id) { showPage('browse'); return; }
+    try {
+      const response = await drawingApi(`/api/view/${id}`, { method: 'HEAD' });
+      if (!response.ok) { showPage('browse'); return; }
+      const name = decodeURIComponent(response.headers.get('content-disposition')?.match(/filename\*?=(?:UTF-8'')?([^;]+)/i)?.[1] || 'Shared document');
+      openPdfViewer(id, name);
+    } catch (error) {
+      console.error('Opening shared document failed:', error);
+      showPage('browse');
+    }
+  }
+  async function copyDocumentLink(id, button) {
+    const url = new URL(`/#document/${id}`, window.location.href).href;
+    const originalText = button.textContent;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(url);
+      else {
+        const helper = document.createElement('textarea');
+        helper.value = url;
+        helper.style.position = 'fixed';
+        helper.style.opacity = '0';
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand('copy');
+        helper.remove();
+      }
+      button.textContent = 'Link copied';
+    } catch (error) {
+      console.error('Copy failed:', error);
+      prompt('Copy this document link:', url);
+    }
+    window.setTimeout(() => { button.textContent = originalText; }, 1600);
+  }
+  document.addEventListener('click', event => {
+    const linkButton = event.target.closest('.doc-link, #viewerCopyLink');
+    if (linkButton) { event.stopPropagation(); copyDocumentLink(linkButton.dataset.docLink || activePdf.id, linkButton); }
+  });
   function openPdfViewer(id, name) {
     const wasHidden = pdfViewer.classList.contains('hidden');
     activePdf = { id, name };
@@ -304,6 +363,7 @@
     pdfViewer.classList.add('hidden');
     searchPage.classList.remove('viewer-open');
     document.body.classList.remove('viewer-open');
+    if (location.hash.startsWith('#document/')) history.replaceState(history.state, '', '#browse');
     // If the viewer was opened from a chat source chip, bring the chat back.
     const suspendedChat = document.getElementById('chatPanel');
     if (suspendedChat && suspendedChat.classList.contains('chat-suspended')) { suspendedChat.classList.remove('chat-suspended'); suspendedChat.hidden = false; }

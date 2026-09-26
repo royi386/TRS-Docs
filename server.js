@@ -800,7 +800,16 @@ app.get('/api/browse', (req, res) => {
     documents.sort((left, right) => String(left.document_number || '').localeCompare(String(right.document_number || ''), undefined, { numeric: true, sensitivity: 'base' }));
   }
 
-  res.json(documents);
+  const perPage = Math.min(Math.max(Number.parseInt(req.query.perPage, 10) || 60, 1), 120);
+  const totalPages = Math.max(1, Math.ceil(documents.length / perPage));
+  const page = Math.min(Math.max(Number.parseInt(req.query.page, 10) || 1, 1), totalPages);
+  res.json({
+    documents: documents.slice((page - 1) * perPage, page * perPage),
+    page,
+    perPage,
+    total: documents.length,
+    totalPages,
+  });
 });
 
 app.get('/api/feedback', requireAdmin, (req, res) => {
