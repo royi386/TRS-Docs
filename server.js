@@ -759,6 +759,50 @@ app.get('/api/documents', requireAdmin, (req, res) => {
   res.json(results);
 });
 
+// Public document browser: lists every document the requester may open. Login-
+// restricted types (Drawings) are hidden unless the caller is a signed-in
+// drawings user. Supports an optional type filter, text filter and sort order.
+app.get('/api/browse', (req, res) => {
+  const requestedType = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+  const typeRecord = requestedType && db.prepare('SELECT name, requires_login FROM document_types WHERE name = ?').get(requestedType);
+  if (typeRecord && typeRecord.requires_login && !isDrawingUser(req)) return res.status(401).json({ error: 'Login is required for this document type' });
+  const canAccessProtectedTypes = isDrawingUser(req);
+  const stmt = canAccessProtectedTypes
+    ? db.prepare(`
+        SELECT id, original_name, document_number, document_type, caption, upload_date, file_size
+        FROM documents
+        ORDER BY upload_date DESC, id DESC
+      `)
+    : db.prepare(`
+        SELECT d.id, d.original_name, d.document_number, d.document_type, d.caption, d.upload_date, d.file_size
+        FROM documents d
+        LEFT JOIN document_types dt ON d.document_type = dt.name
+        WHERE COALESCE(dt.requires_login, 0) = 0
+        ORDER BY d.upload_date DESC, d.id DESC
+      `);
+  let documents = stmt.all();
+
+  if (typeRecord) documents = documents.filter(document => document.document_type === typeRecord.name);
+
+  const filterText = normalizeSearchText(typeof req.query.q === 'string' ? req.query.q : '');
+  if (filterText) {
+    const filterTerms = filterText.split(' ').filter(Boolean);
+    documents = documents.filter(document => {
+      const text = normalizeSearchText(`${document.document_number} ${document.caption} ${document.original_name}`);
+      return filterTerms.every(term => text.includes(term));
+    });
+  }
+
+  const sort = req.query.sort === 'number' ? 'number' : req.query.sort === 'name' ? 'name' : 'date';
+  if (sort === 'name') {
+    documents.sort((left, right) => String(left.caption || '').localeCompare(String(right.caption || ''), undefined, { sensitivity: 'base' }));
+  } else if (sort === 'number') {
+    documents.sort((left, right) => String(left.document_number || '').localeCompare(String(right.document_number || ''), undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  res.json(documents);
+});
+
 app.get('/api/feedback', requireAdmin, (req, res) => {
   const submissions = db.prepare(`
     SELECT id, sender_name, sender_contact, message, original_name, file_size, mime_type, submitted_at,
