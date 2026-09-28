@@ -2,6 +2,16 @@
 
 Searchable Indian Railways RDSO SMI, MS and TC PDF library. Engineers can search by document number or caption and download matching PDFs. The `Admin` page requires the server-side `ADMIN_PASSWORD` and is the only way to upload documents.
 
+## General Rules reader (GRS)
+
+Place `GRS Full.pdf` in the `uploads` folder. On start-up the app parses the book into its 18 chapters and ~292 individually addressable rules and builds a full-text index. The **GRS, AM, ACTM** entry on the home page then offers:
+
+* a chapter dropdown and a rule dropdown (1.01, 1.02, ...) that opens the exact passage,
+* a search box that returns chapter/rule links with text snippets, and
+* Accident Manual and AC Traction Manual documents uploaded through Admin.
+
+`POST /api/grs/reindex` (admin) re-parses the book; the index also rebuilds automatically when the PDF changes.
+
 ## Run with Docker on OMV
 
 1. Copy this folder to the OMV server at `10.189.34.56`.

@@ -2417,6 +2417,8 @@ function streamEvent(res, event, data) {
 
 module.exports = {
   createRag,
+  openPdfDocument,
+  teardownPdf,
   streamEvent,
   extractPdfText,
   ocrPdfPages,

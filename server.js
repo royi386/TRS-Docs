@@ -198,6 +198,10 @@ function requireAdmin(req, res, next) {
 // Retrieval augmented generation over the PDFs in the uploads folder.
 const rag = createRag({ db, uploadDirectory, logger: console });
 
+// Structured reader for the General Rules book (GRS Full.pdf).
+const grs = require('./grs');
+grs.init(db);
+
 // Chat is public, so keep a light per-address limit to protect the AI quota.
 const chatHits = new Map();
 const CHAT_WINDOW_MS = 60 * 1000;
@@ -586,6 +590,17 @@ app.post('/api/drawings/logout', (req, res) => {
   if (token) drawingTokens.delete(token);
   res.json({ success: true });
 });
+
+// ---- GRS structured reader (chapters / rules / full-text search) ----
+app.get('/api/grs/status', (req, res) => res.json(grs.getStatus()));
+app.get('/api/grs/outline', (req, res) => res.json(grs.getOutline()));
+app.get('/api/grs/section', (req, res) => {
+  const section = grs.getSection(req.query.chapter, req.query.number);
+  if (!section) return res.status(404).json({ error: 'Rule not found' });
+  res.json(section);
+});
+app.get('/api/grs/search', (req, res) => res.json(grs.search(req.query.q, req.query.limit)));
+app.post('/api/grs/reindex', requireAdmin, (req, res) => res.json(grs.reindex()));
 
 app.get('/api/document-types', (req, res) => {
   const query = isAdmin(req)
