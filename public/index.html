@@ -24,7 +24,7 @@
     <section class="page" id="libraryPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Library</h1><p class="intro">All documents in the library.</p><div id="libraryList"></div></section>
     <section class="page" id="pneumaticPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Pneumatic fault<br><em>details.</em></h1><div class="panel under-construction"><h2>Under construction</h2><p>Pneumatic fault details will be available here soon.</p><a class="button button-primary" href="#search">Back to document search</a></div></section>
     <section class="page" id="feedbackPage"><div id="publicFeedback"><div class="eyebrow">Contact the library</div><h1>Send feedback</h1><p class="intro">Send a message or a file for the library team to review.</p><form id="feedbackForm" class="panel"><label>Your name<input name="senderName" autocomplete="name" required></label><label>Message<textarea name="message" rows="6" required placeholder="Write your message"></textarea></label><label class="file-drop">Optional file<input name="attachment" type="file"></label><button class="button button-primary" type="submit">Send message</button><p id="feedbackStatus" class="status" aria-live="polite"></p></form></div><div id="feedbackInbox" class="hidden"><div class="eyebrow">Admin inbox</div><h1>User feedback</h1><p class="intro">Messages and files submitted by users.</p><div id="feedbackList" class="feedback-list"></div></div></section>
-    <section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button><button id="viewerCopyLink" class="text-button" type="button">Copy link</button></div></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div></section>
+    <section id="pdfViewer" class="pdf-viewer hidden" aria-live="polite"><div class="pdf-toolbar"><button id="closeViewer" class="text-button" type="button">Back to results</button><div class="viewer-actions"><a id="viewerDownload" class="button button-primary viewer-download" href="#" download>Download PDF</a><button id="viewerShare" class="button viewer-share" type="button">Share PDF</button><button id="viewerCopyLink" class="text-button" type="button">Copy link</button></div></div><div class="pdf-page-nav"><span id="pdfPageIndicator" class="pdf-page-indicator">Page – of –</span><label class="pdf-jump">Go to page <input id="pdfPageJump" type="number" min="1" step="1" value="1" inputmode="numeric"></label></div><h2 id="viewerTitle"></h2><div id="pdfPages" class="pdf-pages"><p class="pdf-status">Loading document...</p></div><div id="pdfPageBadge" class="pdf-page-badge" aria-live="off">Page – of –</div></section>
 
   </main>
   <button id="chatToggle" class="chat-toggle" type="button" aria-label="Ask the library assistant" aria-expanded="false" aria-controls="chatPanel"><span class="chat-toggle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg></span><span class="chat-toggle-label">Ask AI</span></button>
@@ -277,30 +277,146 @@
   const searchPage = document.getElementById('searchPage'); const pdfViewer = document.getElementById('pdfViewer'); const viewerTitle = document.getElementById('viewerTitle'); const viewerDownload = document.getElementById('viewerDownload'); const viewerShare = document.getElementById('viewerShare'); const pdfPages = document.getElementById('pdfPages');
   let pdfRenderRequest = 0;
   let activePdf = { id: '', name: '' };
+  // Lazy rendering: pages are drawn only when they come near the viewport and
+  // canvases far off screen are recycled, so a 500 page scanned PDF costs a
+  // handful of canvases instead of gigabytes of RAM.
+  const PDF_RENDER_MARGIN = 2; // pages below/above the viewport kept rendered
+  const PDF_MAX_CANVASES = 8; // rendered pages kept in the DOM before recycling
+  const PDF_RENDER_SCALE_CAP = 1.5; // device-independent, matches old behaviour
+  let activePdfDoc = null;
+  let lazyPages = [];
+  let pdfObserver = null;
+  function destroyActivePdfDoc() {
+    if (pdfObserver) { pdfObserver.disconnect(); pdfObserver = null; }
+    if (activePdfDoc) { try { activePdfDoc.destroy(); } catch (error) { console.error('PDF cleanup failed:', error); } activePdfDoc = null; }
+    lazyPages = [];
+  }
+  function renderVisiblePdfPages() {
+    const inFlight = lazyPages.filter(page => page.rendering).length;
+    const pending = lazyPages.filter(page => !page.rendered && !page.rendering && page.visible)
+      .sort((a, b) => Math.abs(a.number - currentPdfPage()) - Math.abs(b.number - currentPdfPage()));
+    const budget = Math.max(0, 2 - inFlight);
+    pending.slice(0, budget).forEach(page => renderSinglePdfPage(page));
+    recycleFarPdfPages();
+  }
+  function currentPdfPage() {
+    const visible = lazyPages.filter(page => page.visible);
+    if (!visible.length) {
+      const nearest = lazyPages.find(page => page.node.getBoundingClientRect().top >= -40);
+      return nearest ? nearest.number : (lazyPages.length ? lazyPages[0].number : 1);
+    }
+    return visible.reduce((best, page) => {
+      const area = Math.max(0, Math.min(page.node.getBoundingClientRect().bottom, innerHeight) - Math.max(page.node.getBoundingClientRect().top, 0));
+      const bestNode = best.node.getBoundingClientRect();
+      const bestArea = Math.max(0, Math.min(bestNode.bottom, innerHeight) - Math.max(bestNode.top, 0));
+      return area > bestArea ? page : best;
+    }, visible[0]);
+  }
+  let pdfBadgeTimer = null;
+  function showPdfPageBadge() {
+    const badge = document.getElementById('pdfPageBadge');
+    if (!badge || !lazyPages.length || pdfViewer.classList.contains('hidden')) return;
+    badge.textContent = `Page ${currentPdfPage().number} of ${lazyPages.length}`;
+    badge.classList.add('pdf-page-badge-visible');
+    if (pdfBadgeTimer) window.clearTimeout(pdfBadgeTimer);
+    pdfBadgeTimer = window.setTimeout(() => badge.classList.remove('pdf-page-badge-visible'), 1400);
+  }
+  function recycleFarPdfPages() {
+    const rendered = lazyPages.filter(page => page.rendered);
+    if (rendered.length <= PDF_MAX_CANVASES) return;
+    const anchor = currentPdfPage();
+    rendered.sort((a, b) => Math.abs(b.number - anchor) - Math.abs(a.number - anchor));
+    rendered.slice(0, rendered.length - PDF_MAX_CANVASES).forEach(page => {
+      const canvas = page.node.querySelector('canvas');
+      if (canvas) { canvas.width = 0; canvas.height = 0; canvas.remove(); }
+      page.node.classList.remove('rendered');
+      page.rendered = false;
+    });
+  }
+  async function renderSinglePdfPage(page) {
+    page.rendering = true;
+    try {
+      const pdfPage = await activePdfDoc.getPage(page.number);
+      if (!page.node.isConnected) return;
+      const baseViewport = pdfPage.getViewport({ scale: 1 });
+      const scale = Math.min(PDF_RENDER_SCALE_CAP, Math.max(0.8, (pdfPages.clientWidth - 2) / baseViewport.width));
+      const viewport = pdfPage.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pdf-page';
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      page.node.appendChild(canvas);
+      await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      if (!page.node.isConnected) { canvas.width = 0; canvas.height = 0; return; }
+      page.rendered = true;
+      page.node.classList.add('rendered');
+    } catch (error) {
+      console.error('PDF page render failed:', error);
+      if (page.node.isConnected) page.node.classList.add('page-error');
+    } finally {
+      page.rendering = false;
+      // Kick the queue again so queued pages start as soon as a slot frees up,
+      // even if the user is not scrolling.
+      renderVisiblePdfPages();
+    }
+  }
+  function setupPdfPageObserver() {
+    if (pdfObserver) pdfObserver.disconnect();
+    pdfObserver = new IntersectionObserver(pdfEntries => {
+      pdfEntries.forEach(pdfEntry => {
+        const page = lazyPages.find(candidate => candidate.node === pdfEntry.target);
+        if (!page) return;
+        page.visible = pdfEntry.isIntersecting;
+      });
+      updatePdfPageIndicator();
+      showPdfPageBadge();
+      renderVisiblePdfPages();
+    }, { root: null, rootMargin: `${PDF_RENDER_MARGIN * 100}% 0px`, threshold: 0 });
+    lazyPages.forEach(page => pdfObserver.observe(page.node));
+  }
+  function updatePdfPageIndicator() {
+    const indicator = document.getElementById('pdfPageIndicator');
+    const jump = document.getElementById('pdfPageJump');
+    if (!indicator || !jump || !lazyPages.length) return;
+    const page = currentPdfPage();
+    indicator.textContent = `Page ${page.number} of ${lazyPages.length}`;
+    jump.value = String(page.number);
+    jump.max = String(lazyPages.length);
+  }
   async function renderPdf(id) {
     const requestId = ++pdfRenderRequest;
     pdfPages.innerHTML = '<p class="pdf-status">Loading document...</p>';
+    destroyActivePdfDoc();
     try {
-      const pdf = await pdfjsLib.getDocument(`/api/view/${id}`).promise;
-      if (requestId !== pdfRenderRequest) return;
+      const pdf = await pdfjsLib.getDocument({ url: `/api/view/${id}`, disableAutoFetch: true, disableStream: false }).promise;
+      if (requestId !== pdfRenderRequest) { pdf.destroy(); return; }
+      activePdfDoc = pdf;
+      const total = pdf.numPages;
       pdfPages.innerHTML = '';
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-        const page = await pdf.getPage(pageNumber);
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.5, Math.max(0.8, (pdfPages.clientWidth - 2) / baseViewport.width));
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        canvas.className = 'pdf-page';
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        pdfPages.appendChild(canvas);
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      const fragment = document.createDocumentFragment();
+      for (let pageNumber = 1; pageNumber <= total; pageNumber += 1) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'pdf-page-placeholder';
+        placeholder.style.setProperty('--pdf-page', pageNumber);
+        placeholder.dataset.pageNumber = String(pageNumber);
+        fragment.appendChild(placeholder);
+        lazyPages.push({ number: pageNumber, node: placeholder, rendered: false, rendering: false, visible: false });
       }
+      pdfPages.appendChild(fragment);
+      setupPdfPageObserver();
+      updatePdfPageIndicator();
+      showPdfPageBadge();
+      renderVisiblePdfPages();
     } catch (error) {
       if (requestId === pdfRenderRequest) pdfPages.innerHTML = '<p class="pdf-status">Unable to display this document. Use Download PDF above.</p>';
       console.error('PDF render failed:', error);
     }
   }
+  document.getElementById('pdfPageJump').addEventListener('change', () => {
+    const target = Math.min(lazyPages.length, Math.max(1, parseInt(document.getElementById('pdfPageJump').value, 10) || 1));
+    const page = lazyPages.find(candidate => candidate.number === target);
+    if (page) { page.node.scrollIntoView({ behavior: 'smooth', block: 'start' }); showPdfPageBadge(); }
+  });
   // Resolves #document/<id> links shared by other users. The document must
   // exist and be readable by the current visitor (the HEAD check enforces the
   // same access rules as opening the file), so restricted documents cannot be
@@ -359,6 +475,7 @@
   function closePdfViewer() {
     activePdf = { id: '', name: '' };
     pdfRenderRequest += 1;
+    destroyActivePdfDoc();
     pdfPages.innerHTML = '';
     pdfViewer.classList.add('hidden');
     searchPage.classList.remove('viewer-open');

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rail-docs-shell-v21';
+const CACHE_NAME = 'rail-docs-shell-v23';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -24,6 +24,9 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
+  // Range requests (partial content) must bypass the cache — pdf.js uses them
+  // to stream only the pages being viewed, and caching breaks the stream.
+  if (event.request.headers.has('range')) return;
 
   event.respondWith(
     fetch(event.request)
