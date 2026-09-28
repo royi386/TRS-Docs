@@ -13,7 +13,9 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const adminTokens = new Set();
 const drawingTokens = new Map();
-const uploadDirectory = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+// path.resolve keeps these absolute so res.sendFile works even if the env
+// vars are set to relative paths (res.sendFile rejects relative paths).
+const uploadDirectory = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, 'uploads'));
 const feedbackUploadDirectory = process.env.FEEDBACK_UPLOAD_DIR || path.join(__dirname, 'feedback-uploads');
 const databasePath = process.env.DB_PATH || path.join(__dirname, 'smi_tc.db');
 fs.mkdirSync(uploadDirectory, { recursive: true });
@@ -95,7 +97,7 @@ try {
   if (!error.message.includes('duplicate column name')) throw error;
 }
 const addDocumentType = db.prepare('INSERT OR IGNORE INTO document_types (name, requires_login) VALUES (?, ?)');
-['SMI', 'MS', 'TC', 'Drawings', 'Others'].forEach(name => addDocumentType.run(name, name === 'Drawings' ? 1 : 0));
+['SMI', 'MS', 'TC', 'Drawings', 'Others', 'General Rules', 'Accident Manual', 'AC Traction Manual'].forEach(name => addDocumentType.run(name, name === 'Drawings' ? 1 : 0));
 if (addedDocumentTypeLoginColumn) db.prepare("UPDATE document_types SET requires_login = 1 WHERE name = 'Drawings'").run();
 db.prepare(`
   INSERT OR IGNORE INTO document_types (name)
