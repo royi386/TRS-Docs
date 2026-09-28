@@ -194,6 +194,17 @@ function init(database) {
       body TEXT NOT NULL,
       UNIQUE(chapter, number)
     );
+    CREATE TABLE IF NOT EXISTS grs_edits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chapter INTEGER NOT NULL,
+      number TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      orig_title TEXT,
+      orig_body TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(chapter, number)
+    );
   `);
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_grs_rules_chapter ON grs_rules(chapter)');
@@ -272,6 +283,9 @@ function buildIndex(bookPath) {
             insRule.run(chapter.number, rule.number, rule.title, rule.text);
           }
         }
+        // Manual corrections from the admin editor are reapplied on top, so a
+        // fresh parse of a new correction memo never wipes them.
+        applyEditsToRules();
       });
       write();
 
@@ -289,6 +303,80 @@ function buildIndex(bookPath) {
       grsStatus.building = false;
     }
   });
+}
+
+// ---- Admin corrections overlay ----
+/** Reapplies every stored correction to the live rule table. */
+function applyEditsToRules() {
+  const edits = db.prepare('SELECT * FROM grs_edits ORDER BY id').all();
+  const update = db.prepare('UPDATE grs_rules SET title = ?, body = ? WHERE chapter = ? AND number = ?');
+  const insert = db.prepare('INSERT INTO grs_rules (chapter, number, title, body) VALUES (?, ?, ?, ?)');
+  for (const edit of edits) {
+    const result = update.run(edit.title, edit.body, edit.chapter, edit.number);
+    if (result.changes === 0) insert.run(edit.chapter, edit.number, edit.title, edit.body);
+  }
+  return edits.length;
+}
+
+function getEdits() {
+  return db.prepare(`
+    SELECT e.id, e.chapter, e.number, e.title, e.body, e.orig_title, e.orig_body, e.updated_at,
+      (SELECT COUNT(*) FROM grs_rules r WHERE r.chapter = e.chapter AND r.number = e.number) AS rule_exists
+    FROM grs_edits e ORDER BY e.chapter, e.number
+  `).all();
+}
+
+function setEdit({ chapter, number, title, body }) {
+  const chapterNum = Number(chapter);
+  const ruleNumber = String(number || '').trim();
+  const cleanTitle = String(title || '').trim();
+  const cleanBody = String(body || '').trim();
+  if (!Number.isInteger(chapterNum) || chapterNum < 1 || chapterNum > 18) return { ok: false, error: 'Chapter must be between 1 and 18' };
+  if (!/^\d{1,2}\.\d{1,2}$/.test(ruleNumber)) return { ok: false, error: 'Rule number must look like 4.01' };
+  if (!cleanTitle) return { ok: false, error: 'Title is required' };
+  if (!cleanBody) return { ok: false, error: 'Text is required' };
+  const existing = db.prepare('SELECT * FROM grs_edits WHERE chapter = ? AND number = ?').get(chapterNum, ruleNumber);
+  let origTitle = null;
+  let origBody = null;
+  if (existing) {
+    origTitle = existing.orig_title;
+    origBody = existing.orig_body;
+  } else {
+    const rule = db.prepare('SELECT title, body FROM grs_rules WHERE chapter = ? AND number = ?').get(chapterNum, ruleNumber);
+    origTitle = rule ? rule.title : null;
+    origBody = rule ? rule.body : null;
+  }
+  db.prepare(`
+    INSERT INTO grs_edits (chapter, number, title, body, orig_title, orig_body, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(chapter, number) DO UPDATE SET title = excluded.title, body = excluded.body, updated_at = excluded.updated_at
+  `).run(chapterNum, ruleNumber, cleanTitle, cleanBody, origTitle, origBody);
+  const updated = db.prepare('UPDATE grs_rules SET title = ?, body = ? WHERE chapter = ? AND number = ?')
+    .run(cleanTitle, cleanBody, chapterNum, ruleNumber);
+  if (updated.changes === 0) {
+    // The rule was not in the parsed book — add it (admin-added rule).
+    db.prepare('INSERT INTO grs_rules (chapter, number, title, body) VALUES (?, ?, ?, ?)')
+      .run(chapterNum, ruleNumber, cleanTitle, cleanBody);
+  }
+  outlineCache = null;
+  return { ok: true };
+}
+
+/** Removes a correction and restores the original parsed text (or drops an added rule). */
+function clearEdit(chapter, number) {
+  const chapterNum = Number(chapter);
+  const ruleNumber = String(number || '').trim();
+  const edit = db.prepare('SELECT * FROM grs_edits WHERE chapter = ? AND number = ?').get(chapterNum, ruleNumber);
+  if (!edit) return { ok: false, error: 'No correction stored for this rule' };
+  if (edit.orig_title === null) {
+    db.prepare('DELETE FROM grs_rules WHERE chapter = ? AND number = ?').run(chapterNum, ruleNumber);
+  } else {
+    db.prepare('UPDATE grs_rules SET title = ?, body = ? WHERE chapter = ? AND number = ?')
+      .run(edit.orig_title, edit.orig_body, chapterNum, ruleNumber);
+  }
+  db.prepare('DELETE FROM grs_edits WHERE id = ?').run(edit.id);
+  outlineCache = null;
+  return { ok: true };
 }
 
 function getStatus() {
@@ -361,4 +449,4 @@ function reindex() {
   return { ok: true };
 }
 
-module.exports = { init, stop, getStatus, getOutline, getSection, search, reindex, GR_BOOK_FILENAME };
+module.exports = { init, stop, getStatus, getOutline, getSection, search, reindex, getEdits, setEdit, clearEdit, GR_BOOK_FILENAME };

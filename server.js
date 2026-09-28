@@ -601,6 +601,17 @@ app.get('/api/grs/section', (req, res) => {
 });
 app.get('/api/grs/search', (req, res) => res.json(grs.search(req.query.q, req.query.limit)));
 app.post('/api/grs/reindex', requireAdmin, (req, res) => res.json(grs.reindex()));
+app.get('/api/grs/edits', requireAdmin, (req, res) => res.json(grs.getEdits()));
+app.put('/api/grs/section', requireAdmin, (req, res) => {
+  const result = grs.setEdit(req.body || {});
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
+app.delete('/api/grs/section', requireAdmin, (req, res) => {
+  const result = grs.clearEdit(req.query.chapter, req.query.number);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
 
 app.get('/api/document-types', (req, res) => {
   const query = isAdmin(req)
