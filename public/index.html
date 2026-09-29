@@ -318,14 +318,22 @@
     grsRule.disabled = !chapter;
     if (after) after();
   }
+  function fillGrsChapters() {
+    const outline = grsOutlines[currentGrsBook] || [];
+    const chosen = grsChapter.value;
+    grsChapter.innerHTML = `<option value="">-- Chapter --</option>${outline.map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
+    if (chosen && outline.some(entry => String(entry.number) === chosen)) grsChapter.value = chosen;
+    fillGrsRules();
+  }
   function loadGrsOutline() {
     const book = currentGrsBook;
-    if (grsOutlines[book] && grsOutlines[book].length) { fillGrsRules(); return; }
+    // Always rebuild the chapter dropdown: switching manuals resets it even
+    // when the outline itself is already cached.
+    if (grsOutlines[book] && grsOutlines[book].length) { fillGrsChapters(); return; }
     fetch(`/api/grs/outline?book=${encodeURIComponent(book)}`).then(response => response.json()).then(outline => {
       grsOutlines[book] = outline || [];
       if (book !== currentGrsBook) return; // the reader switched manuals meanwhile
-      grsChapter.innerHTML = `<option value="">-- Chapter --</option>${grsOutlines[book].map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
-      fillGrsRules();
+      fillGrsChapters();
     }).catch(() => { grsStatusBox.textContent = 'Unable to load the rule index.'; });
   }
   function runGrsSearch() {
@@ -355,6 +363,9 @@
   grsSearchResults.addEventListener('click', event => { const card = event.target.closest('.grs-result'); if (card) openGrsResult(card); });
   grsSearchResults.addEventListener('keydown', event => { if (event.key !== 'Enter' && event.key !== ' ') return; const card = event.target.closest('.grs-result'); if (card) { event.preventDefault(); openGrsResult(card); } });
   function prepareGrsReader(book) {
+    // The hash router calls this without a book when the page is opened at
+    // #grs directly — fall back to whatever the manual select shows.
+    if (!book) book = document.getElementById('grsManualSelect').value === 'Accident Manual' ? 'am' : 'grs';
     currentGrsBook = book;
     const label = grsBookLabels[book];
     fetch(`/api/grs/status?book=${encodeURIComponent(book)}`).then(response => response.json()).then(status => {
