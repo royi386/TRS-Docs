@@ -591,24 +591,24 @@ app.post('/api/drawings/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// ---- GRS structured reader (chapters / rules / full-text search) ----
-app.get('/api/grs/status', (req, res) => res.json(grs.getStatus()));
-app.get('/api/grs/outline', (req, res) => res.json(grs.getOutline()));
+// ---- Structured rule books (General Rules, Accident Manual) ----
+app.get('/api/grs/status', (req, res) => res.json(grs.getStatus(req.query.book)));
+app.get('/api/grs/outline', (req, res) => res.json(grs.getOutline(req.query.book)));
 app.get('/api/grs/section', (req, res) => {
-  const section = grs.getSection(req.query.chapter, req.query.number);
+  const section = grs.getSection(req.query.book, req.query.chapter, req.query.number);
   if (!section) return res.status(404).json({ error: 'Rule not found' });
   res.json(section);
 });
-app.get('/api/grs/search', (req, res) => res.json(grs.search(req.query.q, req.query.limit)));
-app.post('/api/grs/reindex', requireAdmin, (req, res) => res.json(grs.reindex()));
-app.get('/api/grs/edits', requireAdmin, (req, res) => res.json(grs.getEdits()));
+app.get('/api/grs/search', (req, res) => res.json(grs.search(req.query.q, req.query.book, req.query.limit)));
+app.post('/api/grs/reindex', requireAdmin, (req, res) => res.json(grs.reindex(req.body ? req.body.book : undefined)));
+app.get('/api/grs/edits', requireAdmin, (req, res) => res.json(grs.getEdits(req.query.book)));
 app.put('/api/grs/section', requireAdmin, (req, res) => {
   const result = grs.setEdit(req.body || {});
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ success: true });
 });
 app.delete('/api/grs/section', requireAdmin, (req, res) => {
-  const result = grs.clearEdit(req.query.chapter, req.query.number);
+  const result = grs.clearEdit(req.query.book, req.query.chapter, req.query.number);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ success: true });
 });

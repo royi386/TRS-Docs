@@ -15,7 +15,7 @@
   <header class="app-header"><div class="header-content"><div class="header-left"><a class="brand" href="#search"><span class="brand-mark">R-D</span><span>Rail Docs</span></a><span id="serverStatus" class="server-status" hidden title="Server load and CPU temperature"><span class="server-status-dot" aria-hidden="true"></span><span id="serverStatusText">…</span></span></div><nav class="app-nav"><a href="#search" class="nav-link active" data-page="search">Home</a><a href="#browse" class="nav-link" data-page="browse">Browse</a><a href="#feedback" class="nav-link" data-page="feedback">Feedback</a><a href="#upload" class="nav-link" data-page="upload">Admin</a></nav></div></header>
   <main class="app-main">
     <section class="page active" id="searchPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><label class="library-mode-picker" for="libraryMode">Open library<select id="libraryMode"><option value="search">SMI / MS / TC</option><option value="drawings">Drawings</option><option value="pneumatic">Pneumatic Fault Details</option><option value="grs">GRS, AM, ACTM</option></select></label><h1>Find the document<br><em>you need.</em></h1><p class="intro">Search RDSO documents by number or caption.</p><div id="results" class="results"></div><div class="search-controls"><form id="searchForm" class="search-box"><label for="searchInput">Document number or caption</label><div class="search-row"><input id="searchInput" autocomplete="off" placeholder="e.g. SMI/EL/123 or axle bearing" required><select id="docType" class="doc-type-select" data-document-type-select="search"><option value="">All Types</option></select></div></form><div id="searchStatus" class="status" aria-live="polite">Start with a document number or a few words from its caption.</div></div></section>
-    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section><section id="drawingUserManager" class="panel hidden"><h2>Drawing users</h2><p>Create and manage local accounts for the Drawings access page.</p><button id="showDrawingUserManager" class="button button-dark" type="button">Manage drawing users</button><div id="drawingUserControls" class="hidden"><form id="drawingUserForm" class="document-type-form"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><div><button class="button button-primary" type="submit">Create user</button></div></form><p id="drawingUserStatus" class="status" aria-live="polite"></p><div id="drawingUserList" class="document-type-list"></div></div></section><section id="grsEditPanel" class="panel hidden"><h2>General Rules editor</h2><p>Correct a rule's title or text, or add a rule the parser missed. Corrections survive re-indexing of the PDF.</p><form id="grsEditForm"><div class="grs-edit-row"><label>Chapter<select id="grsEditChapter"><option value="">-- Chapter --</option></select></label><label>Rule number<select id="grsEditNumber" required disabled><option value="">-- Pick a chapter --</option></select></label><label id="grsEditNewNumberLabel" class="hidden">New rule number<input id="grsEditNewNumber" placeholder="e.g. 4.99" inputmode="decimal" pattern="\d{1,2}\.\d{1,2}"></label><button id="grsEditLoad" class="button button-dark" type="submit">Load rule</button></div><p id="grsEditStatus" class="status" aria-live="polite"></p><div id="grsEditFields" class="hidden"><label>Title<input id="grsEditTitle" maxlength="300"></label><label>Text<textarea id="grsEditBody" rows="14"></textarea></label><div class="grs-edit-actions"><button id="grsEditSave" class="button button-primary" type="button">Save correction</button><button id="grsEditRevert" class="button button-dark" type="button">Revert to parsed text</button></div></div></form><div id="grsEditsList" class="document-type-list"></div></section><section id="indexingPanel" class="panel hidden"><h2>Indexing &amp; OCR</h2><p>The library assistant reads every PDF into a searchable index. Scanned PDFs with no text layer are read with OCR automatically, so give it time to work through them.</p><div id="indexingStats" class="index-stat-grid" aria-live="polite"></div><div class="index-actions"><button id="reindexButton" class="button button-dark" type="button">Reindex all documents</button><span class="field-hint">Forces every PDF to be read again — use after changing OCR or AI settings.</span></div><p id="indexingStatus" class="status" aria-live="polite"></p><label class="checkbox-field"><input id="showIndexedFiles" type="checkbox"> Show indexed files too</label><div id="indexingFileList" class="document-type-list"></div></section></section><section class="page" id="grsPage"><div class="grs-sticky"><div id="grsReader" class="grs-reader hidden"><select id="grsManualSelect" class="doc-type-select" aria-label="Select manual" title="Select manual"><option value="General Rules" selected>General Rules</option><option value="Accident Manual">Accident Manual</option><option value="AC Traction Manual">AC Traction Manual</option></select><select id="grsChapter" aria-label="Chapter" title="Chapter"><option value="">-- Chapter --</option></select><select id="grsRule" aria-label="Rule" title="Rule" disabled><option value="">-- Rule --</option></select><div class="grs-search"><input id="grsSearchInput" autocomplete="off" placeholder="Search the rules, e.g. detonators or line clear" aria-label="Search the rules"><button id="grsSearchButton" class="button button-dark" type="button">Search</button></div></div><p id="grsStatus" class="status grs-status" aria-live="polite"></p></div><div id="grsPassage" class="grs-passage hidden"></div><div id="grsSearchResults" class="grs-search-results hidden"></div><div id="grsManualDocs" class="results hidden"></div><div id="grsUnavailable" class="panel under-construction hidden"><h2>Reader not ready</h2><p id="grsUnavailableReason">The General Rules book is being prepared. Please try again shortly.</p></div></section>
+    <section class="page" id="uploadPage"><div class="eyebrow">Restricted area</div><h1>Library admin</h1><p class="intro">Upload a PDF and its catalogue details.</p><form id="loginForm" class="panel"><label for="password">Admin password</label><input id="password" type="password" autocomplete="current-password" required><button class="button button-dark" type="submit">Sign in</button><p id="loginStatus" class="status"></p></form><form id="uploadForm" class="panel hidden"><label class="file-drop">PDF file<input name="pdf" type="file" accept="application/pdf" required></label><label>Document type<select name="documentType" data-document-type-select="upload" required><option value="">-- Select type --</option></select></label><div class="form-grid"><label>Document number<input name="documentNumber" placeholder="e.g. SMI/EL/123" required></label><label>Caption<textarea name="caption" rows="3" placeholder="Full document caption" required></textarea></label></div><button class="button button-primary" type="submit">Upload document</button><button id="logoutButton" class="text-button" type="button">Sign out</button><p id="uploadStatus" class="status"></p></form><section id="documentTypeManager" class="panel hidden"><h2>Document types</h2><p>Manage the categories available when uploading and editing documents.</p><button id="showDocumentTypeForm" class="button button-dark" type="button">Add document type</button><form id="documentTypeForm" class="document-type-form hidden"><label>New document type<input name="name" maxlength="80" placeholder="e.g. Specification" required></label><div><button class="button button-primary" type="submit">Create type</button><button id="cancelDocumentTypeForm" class="text-button" type="button">Cancel</button></div></form><p id="documentTypeStatus" class="status" aria-live="polite"></p><div id="documentTypeList" class="document-type-list"></div></section><section id="drawingUserManager" class="panel hidden"><h2>Drawing users</h2><p>Create and manage local accounts for the Drawings access page.</p><button id="showDrawingUserManager" class="button button-dark" type="button">Manage drawing users</button><div id="drawingUserControls" class="hidden"><form id="drawingUserForm" class="document-type-form"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><div><button class="button button-primary" type="submit">Create user</button></div></form><p id="drawingUserStatus" class="status" aria-live="polite"></p><div id="drawingUserList" class="document-type-list"></div></div></section><section id="grsEditPanel" class="panel hidden"><h2>Rule books editor</h2><p>Correct a rule's title or text, or add a rule the parser missed. Corrections survive re-indexing of the PDF.</p><form id="grsEditForm"><div class="grs-edit-row"><label>Manual<select id="grsEditManual"><option value="grs" selected>General Rules</option><option value="am">Accident Manual</option></select></label><label>Chapter<select id="grsEditChapter"><option value="">-- Chapter --</option></select></label><label>Rule number<select id="grsEditNumber" required disabled><option value="">-- Pick a chapter --</option></select></label><label id="grsEditNewNumberLabel" class="hidden">New rule number<input id="grsEditNewNumber" placeholder="e.g. 4.99" inputmode="decimal" pattern="\d{1,2}\.\d{1,2}"></label><button id="grsEditLoad" class="button button-dark" type="submit">Load rule</button></div><p id="grsEditStatus" class="status" aria-live="polite"></p><div id="grsEditFields" class="hidden"><label>Title<input id="grsEditTitle" maxlength="300"></label><label>Text<textarea id="grsEditBody" rows="14"></textarea></label><div class="grs-edit-actions"><button id="grsEditSave" class="button button-primary" type="button">Save correction</button><button id="grsEditRevert" class="button button-dark" type="button">Revert to parsed text</button></div></div></form><div id="grsEditsList" class="document-type-list"></div></section><section id="indexingPanel" class="panel hidden"><h2>Indexing &amp; OCR</h2><p>The library assistant reads every PDF into a searchable index. Scanned PDFs with no text layer are read with OCR automatically, so give it time to work through them.</p><div id="indexingStats" class="index-stat-grid" aria-live="polite"></div><div class="index-actions"><button id="reindexButton" class="button button-dark" type="button">Reindex all documents</button><span class="field-hint">Forces every PDF to be read again — use after changing OCR or AI settings.</span></div><p id="indexingStatus" class="status" aria-live="polite"></p><label class="checkbox-field"><input id="showIndexedFiles" type="checkbox"> Show indexed files too</label><div id="indexingFileList" class="document-type-list"></div></section></section><section class="page" id="grsPage"><div class="grs-sticky"><div id="grsReader" class="grs-reader hidden"><select id="grsManualSelect" class="doc-type-select" aria-label="Select manual" title="Select manual"><option value="General Rules" selected>General Rules</option><option value="Accident Manual">Accident Manual</option><option value="AC Traction Manual">AC Traction Manual</option></select><select id="grsChapter" aria-label="Chapter" title="Chapter"><option value="">-- Chapter --</option></select><select id="grsRule" aria-label="Rule" title="Rule" disabled><option value="">-- Rule --</option></select><div class="grs-search"><input id="grsSearchInput" autocomplete="off" placeholder="Search the rules, e.g. detonators or line clear" aria-label="Search the rules"><button id="grsSearchButton" class="button button-dark" type="button">Search</button></div></div><p id="grsStatus" class="status grs-status" aria-live="polite"></p></div><div id="grsPassage" class="grs-passage hidden"></div><div id="grsSearchResults" class="grs-search-results hidden"></div><div id="grsManualDocs" class="results hidden"></div><div id="grsUnavailable" class="panel under-construction hidden"><h2>Reader not ready</h2><p id="grsUnavailableReason">The General Rules book is being prepared. Please try again shortly.</p></div></section>
     <section class="page" id="drawingsPage"><div class="eyebrow">Indian Railways / Engineering Library</div><p class="page-credit">By Electric Loco Shed, Erode</p><h1>Drawings<br><em>access.</em></h1><div id="drawingsLoginPanel" class="panel"><p>Sign in with your Rail Docs drawings account to access the official SLAM drawings portal.</p><form id="drawingsLoginForm"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="button button-primary" type="submit">Sign in</button><button id="createDrawingsAccountButton" class="text-button" type="button">Create account</button><p id="drawingsLoginStatus" class="status" aria-live="polite"></p></form></div><div id="drawingsAccessPanel" class="panel hidden"><h2>Access verified</h2><p>You can now continue to the official SLAM portal. Sign in there using your SLAM credentials.</p><a class="button button-primary" href="https://slam.indianrail.gov.in/SLAM/Login.aspx" target="_blank" rel="noopener noreferrer">Open SLAM drawings portal</a><button id="drawingsLogoutButton" class="text-button" type="button">Sign out</button></div></section>
     <section class="page" id="drawingsRegisterPage"><div class="eyebrow">Indian Railways / Drawings Library</div><h1>Create<br><em>account.</em></h1><p class="intro">Submit your details for admin approval.</p><form id="drawingsRegisterForm" class="panel"><div class="form-grid"><label>Username<input name="username" minlength="3" maxlength="80" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label><label>Name<input name="fullName" maxlength="120" autocomplete="name" required></label><label>Designation<input name="designation" maxlength="120" required></label><label>Division<input name="division" maxlength="120" required></label><label>Phone number<input name="phoneNumber" type="tel" minlength="6" maxlength="30" autocomplete="tel" required></label></div><button class="button button-primary" type="submit">Submit request</button><a class="text-button" href="#drawings">Back to sign in</a><p id="drawingsRegisterStatus" class="status" aria-live="polite"></p></form></section>
     <section class="page" id="drawingsSearchPage"><div class="eyebrow">Indian Railways / Drawings Library</div><h1>Search<br><em>drawings.</em></h1><p class="intro">Search the drawings library by document number, caption, or keyword.</p><button class="text-button drawings-signout-button" type="button">Sign out</button><form id="drawingsSearchForm" class="search-box"><label for="drawingsSearchInput">Document number, caption, or keyword</label><div class="search-row"><input id="drawingsSearchInput" autocomplete="off" placeholder="e.g. drawing number or axle arrangement" required><button class="button button-primary" type="submit">Search drawings</button></div></form><p id="drawingsSearchStatus" class="status" aria-live="polite">Enter a drawing number or keyword to begin.</p><div id="drawingsResults" class="results"></div></section>
@@ -271,13 +271,15 @@
   document.getElementById('browsePrev').addEventListener('click', () => { if (browsePage > 1) { browsePage -= 1; loadBrowse(); } });
   document.getElementById('browseNext').addEventListener('click', () => { if (browsePage < browseTotalPages) { browsePage += 1; loadBrowse(); } });
   browseGroups.addEventListener('click', event => { const card = event.target.closest('.result'); if (card) openBrowseDocument(card.dataset.documentId, card.dataset.documentName); });
-  // ---- GRS structured reader (General Rules book) ----
+  // ---- Structured rule reader (General Rules + Accident Manual) ----
   const grsChapter = document.getElementById('grsChapter');
   const grsRule = document.getElementById('grsRule');
   const grsStatusBox = document.getElementById('grsStatus');
   const grsPassage = document.getElementById('grsPassage');
   const grsSearchResults = document.getElementById('grsSearchResults');
-  let grsOutline = [];
+  const grsBookLabels = { grs: 'General Rules', am: 'Accident Manual' };
+  let grsOutlines = { grs: [], am: [] };
+  let currentGrsBook = 'grs';
   const escapeReg = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   function highlightGrsTerms(container, terms) {
     if (!terms || !terms.length) return;
@@ -292,34 +294,37 @@
       node.parentNode.replaceChild(span, node);
     });
   }
-  function showGrsSection(chapter, number, terms) {
+  function showGrsSection(book, chapter, number, terms) {
     grsSearchResults.classList.add('hidden');
     grsPassage.classList.remove('hidden');
     grsPassage.innerHTML = '<p class="pdf-status">Loading rule…</p>';
-    fetch(`/api/grs/section?chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`)
+    fetch(`/api/grs/section?book=${encodeURIComponent(book)}&chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`)
       .then(response => { if (!response.ok) throw new Error('not found'); return response.json(); })
       .then(section => {
         grsPassage.innerHTML = `<div class="grs-passage-head"><span class="doc-number">Chapter ${section.chapter} • Rule ${section.number}</span><h2>${escapeHtml(section.title)}</h2></div><div class="grs-passage-body">${section.body.split(/\n\n+/).map(paragraph => `<p>${escapeHtml(paragraph)}</p>`).join('')}</div>`;
         highlightGrsTerms(grsPassage, terms);
-        updateGrsPickers(section.chapter, section.number);
+        updateGrsPickers(section.book, section.chapter, section.number);
       })
       .catch(() => { grsPassage.innerHTML = '<p class="pdf-status">Rule not found.</p>'; });
   }
-  function updateGrsPickers(chapter, number) {
+  function updateGrsPickers(book, chapter, number) {
+    if (book) currentGrsBook = book;
     if (chapter) grsChapter.value = String(chapter);
     fillGrsRules(() => { if (number) grsRule.value = number; });
   }
   function fillGrsRules(after) {
-    const chapter = grsOutline.find(entry => String(entry.number) === grsChapter.value);
+    const chapter = (grsOutlines[currentGrsBook] || []).find(entry => String(entry.number) === grsChapter.value);
     grsRule.innerHTML = `<option value="">-- Rule --</option>${chapter ? chapter.rules.map(rule => `<option value="${escapeHtml(rule.number)}">${escapeHtml(rule.number)} ${escapeHtml(rule.title)}</option>`).join('') : ''}`;
     grsRule.disabled = !chapter;
     if (after) after();
   }
   function loadGrsOutline() {
-    if (grsOutline.length) { fillGrsRules(); return; }
-    fetch('/api/grs/outline').then(response => response.json()).then(outline => {
-      grsOutline = outline || [];
-      grsChapter.innerHTML = `<option value="">-- Chapter --</option>${grsOutline.map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
+    const book = currentGrsBook;
+    if (grsOutlines[book] && grsOutlines[book].length) { fillGrsRules(); return; }
+    fetch(`/api/grs/outline?book=${encodeURIComponent(book)}`).then(response => response.json()).then(outline => {
+      grsOutlines[book] = outline || [];
+      if (book !== currentGrsBook) return; // the reader switched manuals meanwhile
+      grsChapter.innerHTML = `<option value="">-- Chapter --</option>${grsOutlines[book].map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
       fillGrsRules();
     }).catch(() => { grsStatusBox.textContent = 'Unable to load the rule index.'; });
   }
@@ -330,7 +335,7 @@
     grsSearchResults.classList.remove('hidden');
     grsSearchResults.innerHTML = '<p class="pdf-status">Searching…</p>';
     grsStatusBox.textContent = '';
-    fetch(`/api/grs/search?q=${encodeURIComponent(query)}`)
+    fetch(`/api/grs/search?q=${encodeURIComponent(query)}&book=${encodeURIComponent(currentGrsBook)}`)
       .then(response => response.json())
       .then(data => {
         if (!data.results || !data.results.length) {
@@ -343,14 +348,16 @@
       .catch(() => { grsSearchResults.innerHTML = '<p class="pdf-status">Search failed. Try again.</p>'; });
   }
   grsChapter.addEventListener('change', () => fillGrsRules());
-  grsRule.addEventListener('change', () => { if (grsRule.value) showGrsSection(grsChapter.value, grsRule.value); });
+  grsRule.addEventListener('change', () => { if (grsRule.value) showGrsSection(currentGrsBook, grsChapter.value, grsRule.value); });
   document.getElementById('grsSearchButton').addEventListener('click', runGrsSearch);
   document.getElementById('grsSearchInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); runGrsSearch(); } });
-  const openGrsResult = element => showGrsSection(element.dataset.chapter, element.dataset.number, (element.dataset.terms || '').split(/\s+/).filter(Boolean));
+  const openGrsResult = element => showGrsSection(currentGrsBook, element.dataset.chapter, element.dataset.number, (element.dataset.terms || '').split(/\s+/).filter(Boolean));
   grsSearchResults.addEventListener('click', event => { const card = event.target.closest('.grs-result'); if (card) openGrsResult(card); });
   grsSearchResults.addEventListener('keydown', event => { if (event.key !== 'Enter' && event.key !== ' ') return; const card = event.target.closest('.grs-result'); if (card) { event.preventDefault(); openGrsResult(card); } });
-  function prepareGrsReader() {
-    fetch('/api/grs/status').then(response => response.json()).then(status => {
+  function prepareGrsReader(book) {
+    currentGrsBook = book;
+    const label = grsBookLabels[book];
+    fetch(`/api/grs/status?book=${encodeURIComponent(book)}`).then(response => response.json()).then(status => {
       if (status.state === 'ready' && status.rules > 0) {
         document.getElementById('grsReader').classList.remove('hidden');
         document.getElementById('grsUnavailable').classList.add('hidden');
@@ -360,14 +367,14 @@
       } else {
         document.getElementById('grsReader').classList.add('hidden');
         document.getElementById('grsUnavailable').classList.remove('hidden');
-        document.getElementById('grsUnavailableReason').textContent = status.building ? 'The General Rules book is being indexed right now. Come back in a couple of minutes.' : (status.lastError ? `The General Rules book could not be indexed: ${status.lastError}` : 'The General Rules book (GRS Full.pdf) is not on the server yet.');
+        document.getElementById('grsUnavailableReason').textContent = status.building ? `The ${label} book is being indexed right now. Come back in a couple of minutes.` : (status.lastError ? `The ${label} book could not be indexed: ${status.lastError}` : `The ${label} book is not on the server yet.`);
       }
     }).catch(() => {
       document.getElementById('grsReader').classList.add('hidden');
       document.getElementById('grsUnavailable').classList.remove('hidden');
     });
   }
-  // The other two manuals keep the plain document listing.
+  // The AC Traction Manual keeps the plain document listing.
   async function loadGrsManualDocs(manualName) {
     const docsBox = document.getElementById('grsManualDocs');
     docsBox.classList.remove('hidden');
@@ -390,35 +397,48 @@
   function grsManualChanged() {
     const manual = document.getElementById('grsManualSelect').value;
     document.getElementById('grsManualDocs').classList.add('hidden');
-    if (manual === 'General Rules') prepareGrsReader();
+    grsChapter.innerHTML = '<option value="">-- Chapter --</option>';
+    grsChapter.value = '';
+    grsRule.innerHTML = '<option value="">-- Rule --</option>';
+    grsRule.value = '';
+    grsRule.disabled = true;
+    grsPassage.classList.add('hidden');
+    grsSearchResults.classList.add('hidden');
+    if (manual === 'General Rules') prepareGrsReader('grs');
+    else if (manual === 'Accident Manual') prepareGrsReader('am');
     else loadGrsManualDocs(manual);
   }
   document.getElementById('grsManualSelect').addEventListener('change', grsManualChanged);
   document.getElementById('grsManualDocs').addEventListener('click', event => { const card = event.target.closest('.result'); if (card && !event.target.closest('.doc-link')) openPdfViewer(card.dataset.documentId, card.dataset.documentName); });
   document.getElementById('grsManualDocs').addEventListener('keydown', event => { if (event.key !== 'Enter' && event.key !== ' ') return; const card = event.target.closest('.result'); if (card && !event.target.closest('.doc-link')) { event.preventDefault(); openPdfViewer(card.dataset.documentId, card.dataset.documentName); } });
 
-  // ---- Admin: General Rules editor ----
+  // ---- Admin: rule books editor (General Rules + Accident Manual) ----
   const grsEditStatus = document.getElementById('grsEditStatus');
   const grsEditFields = document.getElementById('grsEditFields');
+  const grsEditManualSelect = document.getElementById('grsEditManual');
+  const grsEditBookLabels = { grs: 'General Rules', am: 'Accident Manual' };
   let grsEditLoaded = null;
+  let grsEditBook = 'grs';
   const grsEditNumberSelect = document.getElementById('grsEditNumber');
-  let grsEditOutline = null;
+  const grsEditOutlines = { grs: null, am: null };
   function grsEditorChapters() {
-    if (grsEditOutline) { fillGrsEditChapters(); return; }
-    fetch('/api/grs/outline').then(response => response.json()).then(outline => {
-      grsEditOutline = outline || [];
+    const book = grsEditBook;
+    if (grsEditOutlines[book]) { fillGrsEditChapters(); return; }
+    fetch(`/api/grs/outline?book=${encodeURIComponent(book)}`).then(response => response.json()).then(outline => {
+      grsEditOutlines[book] = outline || [];
+      if (book !== grsEditBook) return; // the admin switched manuals meanwhile
       fillGrsEditChapters();
     }).catch(() => { grsEditStatus.textContent = 'Unable to load chapters.'; });
   }
   function fillGrsEditChapters() {
+    const outline = grsEditOutlines[grsEditBook] || [];
     const select = document.getElementById('grsEditChapter');
-    const chosen = select.value;
-    select.innerHTML = `<option value="">-- Chapter --</option>${grsEditOutline.map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
-    if (chosen && grsEditOutline.some(entry => String(entry.number) === chosen)) select.value = chosen;
+    select.innerHTML = `<option value="">-- Chapter --</option>${outline.map(entry => `<option value="${entry.number}">Chapter ${entry.number} — ${escapeHtml(entry.title)}</option>`).join('')}`;
     fillGrsEditRuleOptions();
   }
   function fillGrsEditRuleOptions() {
-    const chapter = grsEditOutline.find(entry => String(entry.number) === document.getElementById('grsEditChapter').value);
+    const outline = grsEditOutlines[grsEditBook] || [];
+    const chapter = outline.find(entry => String(entry.number) === document.getElementById('grsEditChapter').value);
     grsEditNumberSelect.innerHTML = `<option value="">-- Rule number --</option>${chapter ? chapter.rules.map(rule => `<option value="${escapeHtml(rule.number)}">${escapeHtml(rule.number)} ${escapeHtml(rule.title)}</option>`).join('') : ''}<option value="__new__">Other / new rule…</option>`;
     grsEditNumberSelect.disabled = !chapter;
     setGrsEditNewNumberVisible(false);
@@ -443,16 +463,17 @@
     return document.getElementById('grsEditNewNumber').value.trim();
   }
   function loadGrsEditPanel() {
+    grsEditManualSelect.value = grsEditBook;
     grsEditorChapters();
     refreshGrsEditsList();
   }
   async function refreshGrsEditsList() {
     const list = document.getElementById('grsEditsList');
     try {
-      const edits = await fetch('/api/grs/edits', { headers: { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } }).then(r => r.json());
+      const edits = await fetch(`/api/grs/edits?book=${encodeURIComponent(grsEditBook)}`, { headers: { Authorization: `Bearer ${localStorage.getItem(tokenKey)}` } }).then(r => r.json());
       list.innerHTML = edits.length
         ? edits.map(edit => `<article class="document-type-item"><div class="document-type-details"><strong>Chapter ${edit.chapter} • Rule ${escapeHtml(edit.number)}</strong>${edit.rule_exists ? '' : '<span class="login-required-badge">added rule</span>'}<p>${escapeHtml(edit.title)}</p><span class="field-hint">Corrected ${escapeHtml(edit.updated_at)}</span></div><div class="document-type-actions"><button class="text-button grs-edit-load-btn" data-chapter="${edit.chapter}" data-number="${escapeHtml(edit.number)}" type="button">Edit</button><button class="text-button grs-edit-revert-btn" data-chapter="${edit.chapter}" data-number="${escapeHtml(edit.number)}" type="button">Revert</button></div></article>`).join('')
-        : '<p>No corrections yet. Load a rule above to fix its title or text.</p>';
+        : `<p>No corrections yet for the ${escapeHtml(grsEditBookLabels[grsEditBook])}. Load a rule above to fix its title or text.</p>`;
     } catch (error) {
       list.innerHTML = '<p>Unable to load corrections.</p>';
     }
@@ -464,16 +485,16 @@
     if (!/^\d{1,2}\.\d{1,2}$/.test(number)) { grsEditStatus.textContent = 'Rule numbers look like 4.09 — chapter, a dot, then the rule.'; return; }
     grsEditStatus.textContent = 'Loading rule…';
     try {
-      const response = await fetch(`/api/grs/section?chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`);
+      const response = await fetch(`/api/grs/section?book=${encodeURIComponent(grsEditBook)}&chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`);
       if (response.ok) {
         const section = await response.json();
-        grsEditLoaded = { chapter: Number(chapter), number, existed: true };
+        grsEditLoaded = { book: grsEditBook, chapter: Number(chapter), number, existed: true };
         document.getElementById('grsEditTitle').value = section.title;
         document.getElementById('grsEditBody').value = section.body;
         grsEditFields.classList.remove('hidden');
         grsEditStatus.textContent = `Loaded rule ${number}. Edit the fields and save.`;
       } else {
-        grsEditLoaded = { chapter: Number(chapter), number, existed: false };
+        grsEditLoaded = { book: grsEditBook, chapter: Number(chapter), number, existed: false };
         document.getElementById('grsEditTitle').value = '';
         document.getElementById('grsEditBody').value = '';
         grsEditFields.classList.remove('hidden');
@@ -486,6 +507,7 @@
   async function saveGrsEdit() {
     if (!grsEditLoaded) return;
     const payload = {
+      book: grsEditBook,
       chapter: grsEditLoaded.chapter,
       number: grsEditLoaded.number,
       title: document.getElementById('grsEditTitle').value,
@@ -497,21 +519,29 @@
     grsEditStatus.textContent = `Rule ${payload.number} saved. The reader shows the correction immediately.`;
     refreshGrsEditsList();
   }
-  async function revertGrsEdit(chapter, number) {
-    const response = await api(`/api/grs/section?chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`, { method: 'DELETE' });
+  async function revertGrsEdit(book, chapter, number) {
+    const response = await api(`/api/grs/section?book=${encodeURIComponent(book)}&chapter=${encodeURIComponent(chapter)}&number=${encodeURIComponent(number)}`, { method: 'DELETE' });
     const data = await response.json().catch(() => ({}));
     grsEditStatus.textContent = response.ok ? `Rule ${number} reverted to the parsed text.` : (data.error || 'Revert failed.');
     refreshGrsEditsList();
-    if (grsEditLoaded && String(grsEditLoaded.chapter) === String(chapter) && grsEditLoaded.number === number) {
+    if (grsEditLoaded && grsEditLoaded.book === book && String(grsEditLoaded.chapter) === String(chapter) && grsEditLoaded.number === number) {
       grsEditFields.classList.add('hidden');
       grsEditLoaded = null;
     }
   }
   document.getElementById('grsEditForm').addEventListener('submit', event => { event.preventDefault(); loadGrsRuleForEdit(); });
+  grsEditManualSelect.addEventListener('change', () => {
+    grsEditBook = grsEditManualSelect.value;
+    grsEditLoaded = null;
+    grsEditFields.classList.add('hidden');
+    grsEditStatus.textContent = '';
+    grsEditorChapters();
+    refreshGrsEditsList();
+  });
   document.getElementById('grsEditChapter').addEventListener('change', fillGrsEditRuleOptions);
   grsEditNumberSelect.addEventListener('change', () => setGrsEditNewNumberVisible(grsEditNumberSelect.value === '__new__'));
   document.getElementById('grsEditSave').addEventListener('click', saveGrsEdit);
-  document.getElementById('grsEditRevert').addEventListener('click', () => { if (grsEditLoaded) revertGrsEdit(grsEditLoaded.chapter, grsEditLoaded.number); });
+  document.getElementById('grsEditRevert').addEventListener('click', () => { if (grsEditLoaded) revertGrsEdit(grsEditLoaded.book, grsEditLoaded.chapter, grsEditLoaded.number); });
   document.getElementById('grsEditsList').addEventListener('click', event => {
     const loadButton = event.target.closest('.grs-edit-load-btn');
     if (loadButton) {
@@ -521,7 +551,7 @@
       loadGrsRuleForEdit();
     }
     const revertButton = event.target.closest('.grs-edit-revert-btn');
-    if (revertButton && confirm(`Revert rule ${revertButton.dataset.number} to the originally parsed text?`)) revertGrsEdit(revertButton.dataset.chapter, revertButton.dataset.number);
+    if (revertButton && confirm(`Revert rule ${revertButton.dataset.number} to the originally parsed text?`)) revertGrsEdit(grsEditBook, revertButton.dataset.chapter, revertButton.dataset.number);
   });
   browseGroups.addEventListener('keydown', event => { if (event.key !== 'Enter' && event.key !== ' ') return; const card = event.target.closest('.result'); if (card) { event.preventDefault(); openBrowseDocument(card.dataset.documentId, card.dataset.documentName); } });
 
@@ -872,7 +902,7 @@
   const adminMenu = document.createElement('section');
   adminMenu.id = 'adminMenu';
   adminMenu.className = 'admin-menu panel hidden';
-  adminMenu.innerHTML = '<h2>Admin actions</h2><div class="admin-action-grid"><button class="button button-dark" type="button" data-admin-section="upload">Upload document</button><button class="button button-dark" type="button" data-admin-section="types">Manage document types</button><button class="button button-dark" type="button" data-admin-section="users">Manage drawing users</button><button class="button button-dark" type="button" data-admin-section="indexing">Indexing</button><button class="button button-dark" type="button" data-admin-section="grsedit">General Rules editor</button><button class="button button-dark" type="button" data-admin-action="library">Library</button><button class="button button-dark" type="button" data-admin-action="feedback">User feedback</button><button class="button button-dark" type="button" data-admin-action="logout">Sign out</button></div>';
+  adminMenu.innerHTML = '<h2>Admin actions</h2><div class="admin-action-grid"><button class="button button-dark" type="button" data-admin-section="upload">Upload document</button><button class="button button-dark" type="button" data-admin-section="types">Manage document types</button><button class="button button-dark" type="button" data-admin-section="users">Manage drawing users</button><button class="button button-dark" type="button" data-admin-section="indexing">Indexing</button><button class="button button-dark" type="button" data-admin-section="grsedit">Rule books editor</button><button class="button button-dark" type="button" data-admin-action="library">Library</button><button class="button button-dark" type="button" data-admin-action="feedback">User feedback</button><button class="button button-dark" type="button" data-admin-action="logout">Sign out</button></div>';
   const appMain = document.querySelector('.app-main');
   appMain.insertBefore(adminMenu, appMain.firstElementChild);
   const grsEditPanel = document.getElementById('grsEditPanel');
