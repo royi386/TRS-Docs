@@ -12,6 +12,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -227,6 +228,160 @@ function readNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// Like readNumber, but 0 is a meaningful value (it switches a feature off).
+function readCacheNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+const ANSWER_CACHE_MAX_ENTRIES = 500;
+const DEFAULT_ANSWER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const ANSWER_TOKEN_SPLIT = /\S+\s*/g;
+
+/**
+ * Collapses wording differences that must not split the cache: letter case,
+ * punctuation and repeated whitespace. "What is VCB?" and "what is VCB"
+ * share one entry; the words themselves stay significant.
+ */
+function normalizeQuestionKey(question) {
+  return String(question || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * Cache key for a generated answer. Besides the question it covers every
+ * setting that would change the answer: the chat and embedding models, the
+ * retrieval limits and the blending weights. Changing any of them starts a
+ * new key, so a cache never serves an answer produced under different rules.
+ * Conversation history is deliberately not part of the key: follow-up wording
+ * is rewritten into the same standalone question (see standaloneQuestion), and
+ * the answer is grounded in the same indexed passages either way.
+ */
+function answerCacheKey(question, searchQuestion, config) {
+  const settings = [
+    config.provider,
+    config.provider === 'ollama' ? config.ollamaChatModel : config.chatModel,
+    config.provider === 'ollama' ? config.ollamaEmbedModel : config.embedModel,
+    config.topK,
+    config.maxContextChars,
+    config.minScore,
+    config.scoreGapRatio,
+    config.perDocumentLimit,
+    config.keywordWeight,
+    config.vectorWeight,
+    config.ollamaTemperature,
+    config.answerMaxTokens
+  ].join('|');
+  return crypto.createHash('sha256')
+    .update(`${settings}\n${normalizeQuestionKey(searchQuestion)}\n${normalizeQuestionKey(question)}`)
+    .digest('hex');
+}
+
+/**
+ * Local store for generated answers. Hot entries live in a small LRU map so a
+ * repeat question never even touches SQLite; the table underneath survives
+ * restarts and enforces the total cap, discarding the least recently used.
+ * Every database problem disables the store rather than breaking the chat: a
+ * broken cache must never be visible to users.
+ */
+function createAnswerCacheStore(db, logger = console) {
+  let disabled = false;
+  let cleanupsDone = 0;
+  // key -> { storedAt, answer, sources, model }, least recently used first.
+  const memory = new Map();
+
+  const statements = {
+    getRow: db.prepare('SELECT answer, sources, model, created_ms FROM rag_answer_cache WHERE key = ?'),
+    touch: db.prepare('UPDATE rag_answer_cache SET used_ms = ? WHERE key = ?'),
+    insert: db.prepare('INSERT INTO rag_answer_cache (key, answer, sources, model, created_ms, used_ms) VALUES (?, ?, ?, ?, ?, ?)'),
+    refresh: db.prepare('UPDATE rag_answer_cache SET answer = ?, sources = ?, model = ?, created_ms = ?, used_ms = ? WHERE key = ?'),
+    // Keeps the newest `keep` rows by last use; LIMIT -1 OFFSET n is the
+    // SQLite idiom for "everything after the first n".
+    prune: db.prepare('DELETE FROM rag_answer_cache WHERE key IN (SELECT key FROM rag_answer_cache ORDER BY used_ms DESC LIMIT -1 OFFSET ?)'),
+    purgeStale: db.prepare('DELETE FROM rag_answer_cache WHERE used_ms <= ?'),
+    clearAll: db.prepare('DELETE FROM rag_answer_cache'),
+    count: db.prepare('SELECT COUNT(*) AS n FROM rag_answer_cache')
+  };
+
+  function rememberMemory(key, payload, maxEntries) {
+    while (memory.size >= maxEntries) memory.delete(memory.keys().next().value);
+    memory.set(key, payload);
+  }
+
+  function get(key, ttlMs, maxEntries) {
+    if (disabled || !(ttlMs > 0)) return null;
+    const hot = memory.get(key);
+    if (hot) {
+      if (Date.now() - hot.storedAt > ttlMs) {
+        memory.delete(key);
+        return null;
+      }
+      memory.delete(key);
+      memory.set(key, hot);
+      return { answer: hot.answer, sources: hot.sources, model: hot.model };
+    }
+    try {
+      const row = statements.getRow.get(key);
+      if (!row) {
+        // Opportunistic housekeeping: a row nobody has used for a full TTL is
+        // dead weight. Sweep on one miss in 32 instead of running a timer.
+        if ((cleanupsDone++ & 31) === 0) statements.purgeStale.run(Date.now() - Math.max(ttlMs, 60 * 60 * 1000));
+        return null;
+      }
+      if (Date.now() - row.created_ms > ttlMs) return null;
+      statements.touch.run(Date.now(), key);
+      const payload = { storedAt: Date.now(), answer: row.answer, sources: JSON.parse(row.sources), model: row.model || null };
+      rememberMemory(key, payload, maxEntries);
+      return { answer: payload.answer, sources: payload.sources, model: payload.model };
+    } catch (error) {
+      disabled = true;
+      logger.warn(`[rag] answer cache disabled after a read failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  function put(key, payload, maxEntries) {
+    if (disabled || !(maxEntries > 0)) return;
+    const now = Date.now();
+    try {
+      db.transaction(() => {
+        // A refreshed entry keeps its key but restarts its clock, so a
+        // question that keeps being asked keeps its place.
+        if (statements.getRow.get(key)) statements.refresh.run(payload.answer, JSON.stringify(payload.sources), payload.model || '', now, now, key);
+        else {
+          statements.insert.run(key, payload.answer, JSON.stringify(payload.sources), payload.model || '', now, now);
+          statements.prune.run(maxEntries);
+        }
+      })();
+      rememberMemory(key, { storedAt: now, answer: payload.answer, sources: payload.sources, model: payload.model }, maxEntries);
+    } catch (error) {
+      disabled = true;
+      logger.warn(`[rag] answer cache disabled after a write failed: ${error.message}`);
+    }
+  }
+
+  function count() {
+    try { return statements.count.get().n; } catch { return 0; }
+  }
+
+  return {
+    get,
+    put,
+    count,
+    clearMemory: () => memory.clear(),
+    clearAll: () => {
+      memory.clear();
+      if (disabled) return;
+      try { statements.clearAll.run(); } catch (error) {
+        disabled = true;
+        logger.warn(`[rag] answer cache disabled after a clear failed: ${error.message}`);
+      }
+    }
+  };
+}
+
 /**
  * True when a page's text layer is too thin to be content: empty, only page
  * separators, only scanner watermarks ("Scanned by CamScanner" — repeated
@@ -293,6 +448,9 @@ function getConfig() {
     answerMaxTokens: readNumber(process.env.RAG_ANSWER_MAX_TOKENS, limits.answerMaxTokens),
     historyTurns: Math.min(readNumber(process.env.RAG_HISTORY_TURNS, limits.historyTurns), 10),
     historyChars: readNumber(process.env.RAG_HISTORY_CHARS, limits.historyChars),
+    // Repeat-question answer cache.
+    answerCacheTtlMs: readCacheNumber(process.env.RAG_ANSWER_CACHE_TTL_MS, DEFAULT_ANSWER_CACHE_TTL_MS),
+    answerCacheMaxEntries: readCacheNumber(process.env.RAG_ANSWER_CACHE_MAX_ENTRIES, ANSWER_CACHE_MAX_ENTRIES),
     ocrEnabled: process.env.RAG_OCR !== '0',
     ocrLangs: (process.env.RAG_OCR_LANGS || DEFAULT_OCR_LANGS).split(',').map(part => part.trim()).filter(Boolean),
     ocrLangPath: process.env.RAG_OCR_LANG_PATH || '',
@@ -1310,6 +1468,20 @@ function createRag({ db, uploadDirectory, logger = console }) {
     if (!error.message.includes('duplicate column name')) throw error;
   }
 
+  // Repeat-question answer cache. Memory is dropped on every index change
+  // (see invalidateCache); table rows expire after RAG_ANSWER_CACHE_TTL_MS.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rag_answer_cache (
+      key TEXT PRIMARY KEY,
+      answer TEXT NOT NULL,
+      sources TEXT NOT NULL,
+      model TEXT NOT NULL DEFAULT '',
+      created_ms INTEGER NOT NULL,
+      used_ms INTEGER NOT NULL
+    );
+  `);
+  const answerCacheStore = createAnswerCacheStore(db, logger);
+
   const statements = {
     getDocumentMeta: db.prepare(`
       SELECT d.id, d.caption, d.document_number, d.document_type, d.original_name,
@@ -1746,6 +1918,9 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   function invalidateCache() {
     indexedVectorCache = null;
+    // Generated answers must never outlive the passages they came from, so
+    // every index change drops the answer cache entirely.
+    answerCacheStore.clearAll();
   }
 
   function countsSafe() {
@@ -2110,6 +2285,17 @@ function createRag({ db, uploadDirectory, logger = console }) {
     if (searchQuestion !== trimmed) {
       logger.log(`[rag] follow-up detected, searching for: ${searchQuestion}`);
     }
+
+    // A repeat question skips both the embedding call and the model and comes
+    // straight from the local cache. The cache is dropped whenever the index
+    // changes, so a hit always reflects the current library.
+    const cacheKey = config.answerCacheTtlMs > 0 ? answerCacheKey(trimmed, searchQuestion, config) : null;
+    const cached = cacheKey ? answerCacheStore.get(cacheKey, config.answerCacheTtlMs, config.answerCacheMaxEntries) : null;
+    if (cached) {
+      logger.log('[rag] answered from the repeat-question cache');
+      return { ...cached, cached: true };
+    }
+
     const sources = await retrieve(searchQuestion, config.topK);
     if (!sources.length) {
       return {
@@ -2123,10 +2309,12 @@ function createRag({ db, uploadDirectory, logger = console }) {
     const answer = cleanAnswerText(text, sources)
       || String(text || '').trim()
       || 'The AI service returned an empty answer. Please try rephrasing the question.';
+    const clientSources = sourcesToClient(sources);
+    if (cacheKey) answerCacheStore.put(cacheKey, { answer, sources: clientSources, model }, config.answerCacheMaxEntries);
     return {
       answer,
       model,
-      sources: sourcesToClient(sources)
+      sources: clientSources
     };
   }
 
@@ -2164,6 +2352,22 @@ function createRag({ db, uploadDirectory, logger = console }) {
       return;
     }
 
+    // The cache is checked before anything expensive happens, so a repeat
+    // question produces its events instantly.
+    const searchQuestion = standaloneQuestion(trimmed, history);
+    const cacheKey = config.answerCacheTtlMs > 0 ? answerCacheKey(trimmed, searchQuestion, config) : null;
+    const cached = cacheKey ? answerCacheStore.get(cacheKey, config.answerCacheTtlMs, config.answerCacheMaxEntries) : null;
+    if (cached) {
+      logger.log('[rag] answered from the repeat-question cache');
+      yield { sources: cached.sources };
+      // Replay a few words at a time so the UI keeps its usual streaming
+      // behaviour on a cache hit.
+      for (const piece of (cached.answer.match(ANSWER_TOKEN_SPLIT) || [cached.answer])) yield { token: piece };
+      yield { answer: cached.answer, model: cached.model, cached: true };
+      yield STREAM_DONE;
+      return;
+    }
+
     // Tokens arrive deep inside the HTTP stream reader, outside this
     // generator's scope, so they travel through this queue: the callback below
     // (wired into generateAnswer) pushes and the yield loop drains. A promise
@@ -2181,7 +2385,6 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
     const generation = (async () => {
       try {
-        const searchQuestion = standaloneQuestion(trimmed, history);
         if (searchQuestion !== trimmed) {
           logger.log(`[rag] follow-up detected, searching for: ${searchQuestion}`);
         }
@@ -2243,6 +2446,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       yield { error: classifyError(result.error) };
       return;
     }
+    if (cacheKey) answerCacheStore.put(cacheKey, { answer: result.answer, sources: prepared.sources, model: result.model }, config.answerCacheMaxEntries);
     yield { answer: result.answer, model: result.model };
     yield STREAM_DONE;
   }
@@ -2317,7 +2521,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
       lastIndexedAt: counts.last_indexed_at || null,
       lastRunAt: stats.lastRunAt,
       chatModel: config.provider === 'ollama' ? config.ollamaChatModel : (preferredChatModel || config.chatModel),
-      embedModel: config.provider === 'ollama' ? config.ollamaEmbedModel : config.embedModel
+      embedModel: config.provider === 'ollama' ? config.ollamaEmbedModel : config.embedModel,
+      answerCacheEntries: answerCacheStore.count()
     };
   }
 
@@ -2435,5 +2640,8 @@ module.exports = {
   streamOllamaChat,
   keywordQueryFromQuestion,
   AiServiceError,
-  getConfig
+  getConfig,
+  createAnswerCacheStore,
+  normalizeQuestionKey,
+  answerCacheKey
 };

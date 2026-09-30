@@ -18,7 +18,10 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
 
       # --- Local models ---
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
+      # qwen3:4b is the sweet spot for the i5-12400: roughly twice the tokens
+      # per second of the 7b, and the app already sends /no_think so the hybrid
+      # reasoning block is skipped.
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:4b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
       RAG_RESCAN_INTERVAL_MS: 300000
@@ -54,9 +57,18 @@ services:
 
     environment:
       OLLAMA_MAX_LOADED_MODELS: "2"
-      OLLAMA_NUM_PARALLEL: "5"
+      # One request at a time. Parallel slots split the CPU between concurrent
+      # generations, which made every single answer slower; requests now queue
+      # briefly instead (the app rate-limits to 12 questions/min per client).
+      OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-300m}
-      OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-8}
+      # Physical cores only (i5-12400 = 6P/12T). Hyper-threads add cache
+      # contention during token generation without adding speed.
+      OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-6}
+      # Flash attention plus a q8_0 KV cache roughly halves the memory the
+      # context occupies and speeds up long-prompt handling on CPU.
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
 
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
@@ -74,7 +86,7 @@ services:
 
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:4b}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
 
     entrypoint: ["/bin/sh", "-c"]

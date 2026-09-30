@@ -59,6 +59,8 @@ Useful overrides (set them alongside `GEMINI_API_KEY`):
 | `RAG_TOP_K` | `6` | Passages given to the model per question. |
 | `RAG_RESCAN_INTERVAL_MS` | `300000` | How often `uploads` is rescanned. |
 | `RAG_MIN_SCORE` | `0.3` | Similarity needed before a passage counts as a match. |
+| `RAG_ANSWER_CACHE_TTL_MS` | `86400000` | Repeat questions are answered from a local cache for this long (`0` turns the cache off). Cleared automatically whenever documents are re-indexed, edited or deleted. |
+| `RAG_ANSWER_CACHE_MAX_ENTRIES` | `500` | Maximum number of cached answers, least recently used discarded first. |
 | `RAG_OCR_ALL` | `1` | OCR every page, not only pages with no text layer — scanner text layers often hold just a watermark ("Scanned by CamScanner"). `0` restores the old behaviour. |
 | `RAG_OCR_MERGE_LAYER` | `1` | Keep the PDF text layer alongside the OCR reading of the same page. `0` stores the two separately. |
 
