@@ -7,6 +7,7 @@ const os = require('os');
 const Database = require('better-sqlite3');
 const cors = require('cors');
 const { createRag, AiServiceError, streamEvent } = require('./rag');
+const { createUsageLog } = require('./usage');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +36,33 @@ app.use(express.static('public', {
 
 // Database setup
 const db = new Database(databasePath);
+
+// Usage logging for the admin dashboard: page hits and AI questions.
+const usage = createUsageLog(db, console);
+
+// Page hits are recorded on real page views. Assets, API calls and anything
+// with a file extension are plumbing, not usage.
+function pageNameFromPath(pathName) {
+  if (pathName === '/' || pathName === '/index.html') return 'home';
+  if (pathName === '/browse') return 'browse';
+  if (pathName === '/feedback') return 'feedback';
+  if (pathName === '/grs') return 'rulebooks';
+  if (pathName === '/pneumatic') return 'pneumatic';
+  if (pathName === '/drawings' || pathName.startsWith('/drawings-')) return 'drawings';
+  if (pathName === '/upload' || pathName === '/library' || pathName.startsWith('/admin')) return 'admin';
+  if (pathName.startsWith('/document/')) return 'document';
+  if (pathName.startsWith('/api/')) return null;
+  if (pathName.includes('.')) return null;
+  return 'home';
+}
+
+app.use((req, res, next) => {
+  if (req.method === 'GET') {
+    const page = pageNameFromPath(req.path || '');
+    if (page) usage.recordPageHit(page);
+  }
+  next();
+});
 
 // Create tables
 db.exec(`
@@ -370,8 +398,16 @@ app.post('/api/chat', async (req, res) => {
     return res.status(429).json({ error: 'Too many questions in a short time. Please wait a minute and try again.' });
   }
 
+  const startedAt = Date.now();
   try {
-    res.json(await rag.ask(question, { history }));
+    const result = await rag.ask(question, { history });
+    usage.recordQuestion({
+      question,
+      model: result.model || '',
+      cached: Boolean(result.cached),
+      durationMs: Date.now() - startedAt
+    });
+    res.json(result);
   } catch (error) {
     console.error('Chat error:', error);
     const payload = chatErrorPayload(error);
@@ -412,6 +448,8 @@ app.post('/api/chat/stream', async (req, res) => {
   req.on('close', () => clearInterval(heartbeat));
 
   let failed = false;
+  let finalMeta = null;
+  const streamStartedAt = Date.now();
   try {
     for await (const event of rag.askStream(question, { history })) {
       if (res.writableEnded) break;
@@ -423,8 +461,14 @@ app.post('/api/chat/stream', async (req, res) => {
         break;
       }
       if (event.sources) streamEvent(res, 'sources', { sources: event.sources });
-      if (event.answer !== undefined) streamEvent(res, 'final', { answer: event.answer, model: event.model || null });
+      if (event.answer !== undefined) {
+        finalMeta = { model: event.model || '', cached: Boolean(event.cached) };
+        streamEvent(res, 'final', { answer: event.answer, model: event.model || null });
+      }
       if (event.token) streamEvent(res, 'token', { text: event.token });
+    }
+    if (finalMeta && !failed) {
+      usage.recordQuestion({ question, model: finalMeta.model, cached: finalMeta.cached, durationMs: Date.now() - streamStartedAt });
     }
     // A done event only means "the answer finished cleanly"; after an error
     // event it would be contradictory, so it is skipped.
@@ -436,6 +480,14 @@ app.post('/api/chat/stream', async (req, res) => {
     clearInterval(heartbeat);
     if (!res.writableEnded) res.end();
   }
+});
+
+// Usage dashboard for the admin panel: totals, per-day and per-hour series,
+// the readable question log and the top questions/pages.
+app.get('/api/usage', requireAdmin, (req, res) => {
+  const rangeDays = Number.parseInt(req.query.days, 10) || 14;
+  const logLimit = Number.parseInt(req.query.logLimit, 10) || 50;
+  res.json(usage.summary({ rangeDays, logLimit }));
 });
 
 // Live indexing progress for the admin panel. Uploads index in the background,
