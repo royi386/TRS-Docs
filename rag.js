@@ -157,7 +157,7 @@ function standaloneQuestion(question, history) {
  * is reasoning, not the answer. Small models love the "First, I need to…"
  * and "Looking at the passages…" variants, so those are covered too.
  */
-const REASONING_OPENER = /^\s*(?:okay\b|alright\b|hmm+\b|let me\b|the user\b|the question\b|i need to\b|i should\b|i'll\b|i will\b|first(?:ly)?\b[,:\s]*(?:i\b|we\b|let\b)|looking at (?:the )?(?:passages?|context)\b|to answer (?:this |the )?question\b)/i;
+const REASONING_OPENER = /^\s*(?:okay\b|alright\b|hmm+\b|let me\b|the user\b|i need to\b|i should\b|i'll\b|i will\b|first(?:ly)?\b[,:\s]*(?:i\b|we\b|let\b)|looking at (?:the )?(?:passages?|context)\b|to answer (?:this |the )?question\b)/i;
 
 /**
  * Removes a thinking model's reasoning. Handles a well-formed <think>…</think>
@@ -1154,6 +1154,9 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
   // Ollama reports why the stream ended: "stop" is a natural finish, "length"
   // means the answer hit the token budget and was cut off mid-sentence.
   let doneReason = null;
+  // Whatever was suppressed as reasoning, kept so the caller can log a
+  // preview when the suppression leaves nothing usable.
+  let suppressed = '';
   // Chat stream frames carry incremental content deltas, and the final done
   // frame repeats an empty message, so the text has to be concatenated here —
   // taking the last frame's message verbatim would lose the whole answer.
@@ -1191,6 +1194,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
     headBuffer = '';
     if (REASONING_OPENER.test(visible)) {
       thinking = true;
+      suppressed += visible;
       return;
     }
     answerStarted = true;
@@ -1215,6 +1219,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       headBuffer += text;
       if (REASONING_OPENER.test(headBuffer)) {
         thinking = true;
+        suppressed += headBuffer;
         headBuffer = '';
         pendingTail = '';
         return;
@@ -1246,6 +1251,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
             break;
           }
           thinking = false;
+          suppressed += buffered.slice(0, end);
           buffered = buffered.slice(end + THINK_CLOSE.length);
         } else {
           const start = buffered.indexOf(THINK_OPEN);
@@ -1281,19 +1287,19 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       newlineAt = buffer.indexOf('\n');
       if (consumeLine(line)) {
         flushHead();
-        return { message, done: true, doneReason };
+        return { message, done: true, doneReason, suppressed };
       }
     }
   }
   if (buffer.trim() && consumeLine(buffer)) {
     if (thinking) message.content = '';
     flushHead();
-    return { message, done: true, doneReason };
+    return { message, done: true, doneReason, suppressed };
   }
   // Stream ended while the model was still reasoning: nothing usable was said.
   if (thinking) {
     message.content = '';
-    return { message, done: true, doneReason };
+    return { message, done: true, doneReason, suppressed };
   }
   if (pendingTail) {
     const visible = pendingTail;
@@ -1301,7 +1307,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
     emitVisible(visible);
   }
   flushHead();
-  return { message, done: false, doneReason };
+  return { message, done: false, doneReason, suppressed };
 }
 
 /**
@@ -2289,6 +2295,13 @@ function createRag({ db, uploadDirectory, logger = console }) {
           );
           const text = String(payload?.message?.content || '').trim();
           if (!text) {
+            // The log preview shows what the model actually opened with, so
+            // tuning the opener list never has to rely on guesswork.
+            const rawSuppressed = String(payload?.suppressed || '');
+            if (rawSuppressed) {
+              const preview = rawSuppressed.replace(/\s+/g, ' ').trim().slice(0, 120);
+              logger.warn(`[rag] the model opened with reasoning instead of an answer: "${preview}${rawSuppressed.length > 120 ? '…' : ''}"`);
+            }
             if (attempt === 0) {
               lastError = new AiServiceError('The local model explained its steps instead of answering.');
               continue;
