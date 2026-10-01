@@ -1254,8 +1254,15 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
     // The answer must not open with the blank line the model leaves after its
     // </think> tag, so leading whitespace is trimmed off the first emission.
     if (!answerStarted) {
-      text = text.replace(/^\s+/, '');
-      if (!text) return;
+      // Only the very first fragment may lose its leading whitespace (the
+      // blank line a model leaves after its </think> tag). Token fragments
+      // carry the word spaces as LEADING whitespace, so stripping every
+      // fragment here would fuse the opening words together.
+      if (!headBuffer) {
+        text = text.replace(/^\s+/, '');
+        if (!text) return;
+      }
+      headBuffer += text;
       // Older Ollama builds stream a thinking model's reasoning as plain text
       // with no <think> tags at all — the exact failure this filter exists
       // for. A response opening with a reasoning-style filler line is treated
@@ -1264,7 +1271,6 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       // Because chunks are fragments, the opening frames are buffered until
       // the buffer matches an opener (reasoning — suppress everything) or is
       // long enough / has a newline (a real answer — release it).
-      headBuffer += text;
       // Strip a leading verbal tic once the head holds enough of it, then
       // judge the remainder on its own.
       const tic = headBuffer.match(LEADING_TIC);
