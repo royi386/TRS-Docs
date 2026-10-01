@@ -356,7 +356,10 @@ function readCacheNumber(value, fallback) {
 }
 
 const ANSWER_CACHE_MAX_ENTRIES = 500;
-const DEFAULT_ANSWER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// Cached answers live until something makes them wrong: an index change (the
+// cache is cleared on every re-index, edit or delete), a model or retrieval
+// setting change (the cache key changes) or the LRU cap. No time expiry.
+const ANSWER_CACHE_PERMANENT_MS = Number.MAX_SAFE_INTEGER;
 const ANSWER_TOKEN_SPLIT = /\S+\s*/g;
 
 /**
@@ -464,8 +467,10 @@ function createAnswerCacheStore(db, logger = console) {
     try {
       const row = statements.getRow.get(key);
       if (!row) {
-        // Opportunistic housekeeping: a row nobody has used for a full TTL is
-        // dead weight. Sweep on one miss in 32 instead of running a timer.
+        // Opportunistic housekeeping: with a finite TTL, a row nobody has used
+        // for a full TTL is dead weight — sweep on one miss in 32 instead of
+        // running a timer. With a permanent cache the cutoff is in the past,
+        // so the sweep matches nothing and costs a no-op DELETE.
         if ((cleanupsDone++ & 31) === 0) statements.purgeStale.run(Date.now() - Math.max(ttlMs, 60 * 60 * 1000));
         return null;
       }
@@ -587,8 +592,11 @@ function getConfig() {
     answerMaxTokens: readNumber(process.env.RAG_ANSWER_MAX_TOKENS, limits.answerMaxTokens),
     historyTurns: Math.min(readNumber(process.env.RAG_HISTORY_TURNS, limits.historyTurns), 10),
     historyChars: readNumber(process.env.RAG_HISTORY_CHARS, limits.historyChars),
-    // Repeat-question answer cache.
-    answerCacheTtlMs: readCacheNumber(process.env.RAG_ANSWER_CACHE_TTL_MS, DEFAULT_ANSWER_CACHE_TTL_MS),
+    // Repeat-question answer cache. Cached answers never expire on their own;
+    // they are dropped when the index, the models or the retrieval settings
+    // change, and the LRU cap bounds the table. Set the env var to 0 to turn
+    // the cache off entirely.
+    answerCacheTtlMs: readCacheNumber(process.env.RAG_ANSWER_CACHE_TTL_MS, ANSWER_CACHE_PERMANENT_MS),
     answerCacheMaxEntries: readCacheNumber(process.env.RAG_ANSWER_CACHE_MAX_ENTRIES, ANSWER_CACHE_MAX_ENTRIES),
     ocrEnabled: process.env.RAG_OCR !== '0',
     ocrLangs: (process.env.RAG_OCR_LANGS || DEFAULT_OCR_LANGS).split(',').map(part => part.trim()).filter(Boolean),
@@ -1715,7 +1723,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
   }
 
   // Repeat-question answer cache. Memory is dropped on every index change
-  // (see invalidateCache); table rows expire after RAG_ANSWER_CACHE_TTL_MS.
+  // (see invalidateCache); table rows persist until the index, the models or
+  // the retrieval settings change, or the LRU cap discards them.
   db.exec(`
     CREATE TABLE IF NOT EXISTS rag_answer_cache (
       key TEXT PRIMARY KEY,
