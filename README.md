@@ -21,7 +21,7 @@ The admin **Rule books editor** corrects any rule's title or text (or adds missi
 3. Start it with `docker compose up -d --build`.
 4. Open `http://10.189.34.56:3000` on the railway network.
 
-The `data` folder stores SQLite metadata and `uploads` stores PDFs. Back up both folders. For internet access, place it behind HTTPS and do not expose port 3000 directly to the public internet.
+The `data` folder stores SQLite metadata and `uploads` stores PDFs, next to `docker-compose.yml` by default. To keep them somewhere else (another disk, or the Windows dev layout `D:/TRS_Docs`), set `TRS_DOCS_DIR` in `.env` to that folder — the compose file mounts `$TRS_DOCS_DIR/data`, `$TRS_DOCS_DIR/uploads`, `$TRS_DOCS_DIR/ocr-cache` and `$TRS_DOCS_DIR/ollama`. Back up `data` and `uploads`. For internet access, place it behind HTTPS and do not expose port 3000 directly to the public internet.
 
 ## AI library assistant
 

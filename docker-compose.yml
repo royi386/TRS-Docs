@@ -41,11 +41,12 @@ services:
       RAG_OCR_MERGE_LAYER: "1"
 
     volumes:
-      # TRS_DOCS_DIR lets a Linux server keep its own data location (see .env)
-      # while the Windows default stays for local development.
-      - ${TRS_DOCS_DIR:-D:/TRS_Docs}/data:/app/data
-      - ${TRS_DOCS_DIR:-D:/TRS_Docs}/uploads:/app/uploads
-      - ${TRS_DOCS_DIR:-D:/TRS_Docs}/ocr-cache:/app/ocr-cache
+      # Everything lives under one base directory: TRS_DOCS_DIR in .env points
+      # at it (e.g. /srv/trs-docs or D:/TRS_Docs). Unset, the data, uploads,
+      # ocr-cache and ollama folders sit next to this compose file.
+      - ${TRS_DOCS_DIR:-.}/data:/app/data
+      - ${TRS_DOCS_DIR:-.}/uploads:/app/uploads
+      - ${TRS_DOCS_DIR:-.}/ocr-cache:/app/ocr-cache
 
     depends_on:
       - ollama
@@ -56,8 +57,8 @@ services:
     restart: unless-stopped
 
     volumes:
-      # Ollama models are stored on the data disk (Windows default shown).
-      - ${TRS_DOCS_DIR:-D:/TRS_Docs}/ollama:/root/.ollama
+      # Ollama models are stored under the same base directory (see .env).
+      - ${TRS_DOCS_DIR:-.}/ollama:/root/.ollama
 
     environment:
       OLLAMA_MAX_LOADED_MODELS: "2"
