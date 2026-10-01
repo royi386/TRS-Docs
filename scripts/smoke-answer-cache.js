@@ -33,6 +33,10 @@ function makeDb() {
 
 /** Fake Ollama: /api/embed returns a stable vector per text, /api/chat streams a canned answer. */
 function startFakeOllama() {
+  // Modes the tests switch into: 'reason' leaks chain-of-thought once then
+  // answers properly on the retried request; 'truncated' reports done_reason
+  // "length" so the answer comes back cut off by design.
+  const behaviour = { mode: 'normal', chatCalls: [] };
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', chunk => { raw += chunk; });
@@ -54,20 +58,31 @@ function startFakeOllama() {
       }
       if (req.url === '/api/chat') {
         const body = JSON.parse(raw);
+        behaviour.chatCalls.push(body);
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        const nudge = /Answer directly with the facts/.test(body.messages[body.messages.length - 1].content || '');
+        if (behaviour.mode === 'reason' && !nudge) {
+          for (const piece of ['First, ', 'I need to answer ', 'the question using ', 'only the passages.']) {
+            res.write(`${JSON.stringify({ message: { role: 'assistant', content: piece }, done: false })}\n`);
+          }
+          // Real Ollama repeats an empty message on the final done frame.
+          return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' })}\n`);
+        }
+        if (behaviour.mode === 'truncated') {
+          res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'DGA is dissolved gas analysis and the document says ' }, done: false })}\n`);
+          return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'length' })}\n`);
+        }
         for (const piece of ['Hello ', 'from ', 'the ', 'model.']) {
           res.write(`${JSON.stringify({ message: { role: 'assistant', content: piece }, done: false })}\n`);
         }
         // Real Ollama repeats an empty message on the final done frame.
-        res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, prompt_eval_count: 1, eval_count: 5 })}\n`);
-        void body;
-        return;
+        return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop', prompt_eval_count: 1, eval_count: 5 })}\n`);
       }
       res.writeHead(404);
       res.end('{}');
     });
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port })));
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, behaviour })));
 }
 
 async function main() {
@@ -78,7 +93,7 @@ async function main() {
   process.env.OLLAMA_EMBED_QUERY_PREFIX = '';
   process.env.RAG_RESCAN_INTERVAL_MS = '60000';
 
-  const { server, port } = await startFakeOllama();
+  const { server, port, behaviour } = await startFakeOllama();
   process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${port}`;
 
   const db = makeDb();
@@ -152,6 +167,33 @@ async function main() {
   const freshStore = require('../rag').createAnswerCacheStore(db, { warn: () => {} });
   const miss = freshStore.get(require('../rag').answerCacheKey('What is VCB?', 'What is VCB?', config), 86400000, 500);
   assert.strictEqual(miss, null, 'a corrupt row must degrade to a cache miss, not a crash');
+
+  // 9. A reasoning leak is retried with a direct-answer instruction, and only
+  // the proper answer is cached.
+  rag.invalidateCache();
+  behaviour.mode = 'reason';
+  behaviour.chatCalls.length = 0;
+  const reasoned = await rag.ask('DGA');
+  assert.strictEqual(reasoned.answer, 'Hello from the model.', 'the retried request must produce the real answer');
+  assert.strictEqual(behaviour.chatCalls.length, 2, 'the model must be called twice: leak, then direct-answer retry');
+  assert.ok(/Answer directly with the facts/.test(behaviour.chatCalls[1].messages.at(-1).content), 'the retry must carry the direct-answer instruction');
+  const afterReasoned = await rag.ask('DGA');
+  assert.ok(afterReasoned.cached, 'the proper answer (not the leak) must be cached');
+
+  // 10. A truncated answer (done_reason "length") is shown but never cached.
+  rag.invalidateCache();
+  behaviour.mode = 'truncated';
+  const truncated = await rag.ask('DGA');
+  assert.match(truncated.answer, /dissolved gas analysis/, 'the truncated text is still shown to the user');
+  const statusAfterTruncated = await rag.getStatus();
+  assert.strictEqual(statusAfterTruncated.answerCacheEntries, 0, 'a truncated answer must not enter the cache');
+
+  // 11. The quality gate itself.
+  const { isCacheableAnswer } = require('../rag');
+  assert.strictEqual(isCacheableAnswer('The VCB is a vacuum circuit breaker.', false), true);
+  assert.strictEqual(isCacheableAnswer('First, I need to check the passages.', false), false, 'reasoning openers are not cacheable');
+  assert.strictEqual(isCacheableAnswer('A fine answer.', true), false, 'truncated answers are not cacheable');
+  assert.strictEqual(isCacheableAnswer('', false), false);
 
   server.close();
   console.log('answer cache smoke test: all assertions passed');

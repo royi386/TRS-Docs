@@ -84,7 +84,7 @@ const SYSTEM_INSTRUCTION = [
   '5. Prefer exact document numbers, figures and technical wording from the passages.',
   '6. If the passages disagree, say so rather than picking one silently.',
   '7. Answer in the same language the question was asked in.',
-  '8. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back.',
+  '8. Be concise and practical. Use short paragraphs or a brief list. Do not repeat the question back, and never narrate your reasoning — never write things like "First, I need to…" or "Looking at the passages…"; answer directly.',
   '9. When you mention a document, use its document number and caption from the passage header. Never mention file names in your answer; if a passage has no document number, refer to it by its caption.',
   '10. The conversation history shows what was discussed earlier. Use it to understand short follow-up questions, but answer only from the passages, never from memory of the earlier conversation.'
 ].join('\n');
@@ -154,9 +154,10 @@ function standaloneQuestion(question, history) {
  * Filler lines a thinking model starts its reasoning with. Also matched by
  * older Ollama builds that stream reasoning as plain text with no tags. The
  * system prompt forbids answers that open like this, so a hit means the text
- * is reasoning, not the answer.
+ * is reasoning, not the answer. Small models love the "First, I need to…"
+ * and "Looking at the passages…" variants, so those are covered too.
  */
-const REASONING_OPENER = /^\s*(okay\b|alright\b|hmm+\b|let me\b|the user\b|i need to\b|i should\b|i'll\b|i will\b)/i;
+const REASONING_OPENER = /^\s*(?:okay\b|alright\b|hmm+\b|let me\b|the user\b|the question\b|i need to\b|i should\b|i'll\b|i will\b|first(?:ly)?\b[,:\s]*(?:i\b|we\b|let\b)|looking at (?:the )?(?:passages?|context)\b|to answer (?:this |the )?question\b)/i;
 
 /**
  * Removes a thinking model's reasoning. Handles a well-formed <think>…</think>
@@ -261,6 +262,9 @@ function normalizeQuestionKey(question) {
  */
 function answerCacheKey(question, searchQuestion, config) {
   const settings = [
+    // v3: answers generated before the reasoning-leak, truncation and
+    // stream-head fixes must never be served again; the bump orphans them.
+    'v3',
     config.provider,
     config.provider === 'ollama' ? config.ollamaChatModel : config.chatModel,
     config.provider === 'ollama' ? config.ollamaEmbedModel : config.embedModel,
@@ -277,6 +281,20 @@ function answerCacheKey(question, searchQuestion, config) {
   return crypto.createHash('sha256')
     .update(`${settings}\n${normalizeQuestionKey(searchQuestion)}\n${normalizeQuestionKey(question)}`)
     .digest('hex');
+}
+
+/**
+ * Quality gate for the answer cache. A truncated answer (the model ran out
+ * of its token budget mid-sentence) or one that still reads like the model's
+ * chain-of-thought is shown to the user as usual, but must never be served
+ * instantly on every repeat: cached garbage is worse than slow quality.
+ */
+function isCacheableAnswer(answer, truncated = false) {
+  const value = String(answer || '').trim();
+  if (!value) return false;
+  if (truncated) return false;
+  if (REASONING_OPENER.test(value)) return false;
+  return true;
 }
 
 /**
@@ -1133,6 +1151,9 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  // Ollama reports why the stream ended: "stop" is a natural finish, "length"
+  // means the answer hit the token budget and was cut off mid-sentence.
+  let doneReason = null;
   // Chat stream frames carry incremental content deltas, and the final done
   // frame repeats an empty message, so the text has to be concatenated here —
   // taking the last frame's message verbatim would lose the whole answer.
@@ -1146,6 +1167,12 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
   let thinking = false;
   let answerStarted = false;
   let pendingTail = '';
+  // Stream chunks are tiny, so a reasoning opener like "First, I need to…"
+  // is usually split across several frames ("First," + " I" + …). The first
+  // frame alone is not enough to judge, so the head of the answer is held
+  // back until the opener test can decide one way or the other.
+  let headBuffer = '';
+  const HEAD_DECIDE_CHARS = 60;
   const THINK_OPEN = '<think>';
   const THINK_CLOSE = '</think>';
   // Length of the longest suffix of text that is a proper prefix of tag —
@@ -1155,6 +1182,20 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       if (text.endsWith(tag.slice(0, length))) return length;
     }
     return 0;
+  };
+  // End of the stream: the head buffer still holds a short answer. Release
+  // it unless it turns out to open like reasoning.
+  const flushHead = () => {
+    if (answerStarted || thinking || !headBuffer) return;
+    const visible = headBuffer;
+    headBuffer = '';
+    if (REASONING_OPENER.test(visible)) {
+      thinking = true;
+      return;
+    }
+    answerStarted = true;
+    message.content += visible;
+    if (onToken) onToken(visible);
   };
   const emitVisible = text => {
     if (!text) return;
@@ -1168,10 +1209,19 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       // for. A response opening with a reasoning-style filler line is treated
       // as reasoning: suppressed until a </think> marker shows up, or to the
       // end of the stream. /no_think makes this path rare anyway.
-      if (REASONING_OPENER.test(text)) {
+      // Because chunks are fragments, the opening frames are buffered until
+      // the buffer matches an opener (reasoning — suppress everything) or is
+      // long enough / has a newline (a real answer — release it).
+      headBuffer += text;
+      if (REASONING_OPENER.test(headBuffer)) {
         thinking = true;
+        headBuffer = '';
+        pendingTail = '';
         return;
       }
+      if (headBuffer.length < HEAD_DECIDE_CHARS && !headBuffer.includes('\n')) return;
+      text = headBuffer;
+      headBuffer = '';
       answerStarted = true;
     }
     message.content += text;
@@ -1216,6 +1266,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       if (!thinking && buffered) emitVisible(buffered);
     }
     if (chunk.message?.role) message.role = chunk.message.role;
+    if (chunk.done_reason) doneReason = String(chunk.done_reason);
     if (chunk.error) throw new AiServiceError(String(chunk.error), { retryable: false, kind: 'request' });
     return chunk.done === true;
   };
@@ -1228,24 +1279,29 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       const line = buffer.slice(0, newlineAt);
       buffer = buffer.slice(newlineAt + 1);
       newlineAt = buffer.indexOf('\n');
-      if (consumeLine(line)) return { message, done: true };
+      if (consumeLine(line)) {
+        flushHead();
+        return { message, done: true, doneReason };
+      }
     }
   }
   if (buffer.trim() && consumeLine(buffer)) {
     if (thinking) message.content = '';
-    return { message, done: true };
+    flushHead();
+    return { message, done: true, doneReason };
   }
   // Stream ended while the model was still reasoning: nothing usable was said.
   if (thinking) {
     message.content = '';
-    return { message, done: true };
+    return { message, done: true, doneReason };
   }
   if (pendingTail) {
     const visible = pendingTail;
     pendingTail = '';
     emitVisible(visible);
   }
-  return { message, done: false };
+  flushHead();
+  return { message, done: false, doneReason };
 }
 
 /**
@@ -2196,21 +2252,44 @@ function createRag({ db, uploadDirectory, logger = console }) {
     // Ask them not to think as well, and fall back to a plain request if this
     // model or Ollama version rejects the flag.
     const bodies = [{ ...request, think: false }, request];
+    // When a model reasons on the page anyway ("First, I need to…"), the
+    // stream reader suppresses it all and the answer comes back empty. One
+    // extra attempt with an explicit instruction usually makes it answer
+    // directly instead of explaining its steps.
+    const ANSWER_DIRECTLY = '\n\nAnswer directly with the facts from the passages. Do not write your reasoning and do not describe what you are checking; the first word of your reply must already be part of the answer.';
     let lastError;
     for (const body of bodies) {
-      try {
-        const payload = await withRetry(
-          () => streamOllamaChat(body, config, onToken),
-          { attempts: 3, onRetry: (error, waitMs) => logger.warn(`[rag] answer retry in ${Math.round(waitMs)}ms: ${error.message}`) }
-        );
-        const text = String(payload?.message?.content || '').trim();
-        if (!text) throw new AiServiceError('The local model returned an empty answer. It may have run out of its answer budget.');
-        return { text, model: config.ollamaChatModel };
-      } catch (error) {
-        lastError = error;
-        if (error instanceof AiServiceError && error.kind === 'model') throw missingModelError(config.ollamaChatModel, error);
-        if (error instanceof AiServiceError && error.status === 400) continue;
-        throw error;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const messages = [...body.messages];
+        if (attempt === 1) {
+          const last = messages.length - 1;
+          messages[last] = { ...messages[last], content: `${messages[last].content}${ANSWER_DIRECTLY}` };
+          logger.warn('[rag] the model explained its steps instead of answering; retrying with a direct-answer instruction');
+        }
+        try {
+          const payload = await withRetry(
+            () => streamOllamaChat({ ...body, messages }, config, onToken),
+            { attempts: 3, onRetry: (error, waitMs) => logger.warn(`[rag] answer retry in ${Math.round(waitMs)}ms: ${error.message}`) }
+          );
+          const text = String(payload?.message?.content || '').trim();
+          if (!text) {
+            if (attempt === 0) {
+              lastError = new AiServiceError('The local model explained its steps instead of answering.');
+              continue;
+            }
+            throw new AiServiceError('The local model kept explaining its steps instead of answering. Try a fuller question, for example "What is DGA in traction transformers?"');
+          }
+          // "length" means the answer hit the token budget and was cut off
+          // mid-sentence — the caller must know so it never caches half an answer.
+          return { text, model: config.ollamaChatModel, truncated: payload.doneReason === 'length' };
+        } catch (error) {
+          lastError = error;
+          if (error instanceof AiServiceError && error.kind === 'model') throw missingModelError(config.ollamaChatModel, error);
+          // A 400 usually means this Ollama build rejects the think flag, so
+          // fall through to the plain request.
+          if (error instanceof AiServiceError && error.status === 400) break;
+          throw error;
+        }
       }
     }
     throw lastError || new AiServiceError('The local model did not return an answer.');
@@ -2305,12 +2384,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
       };
     }
 
-    const { text, model } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config)));
+    const { text, model, truncated } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config)));
     const answer = cleanAnswerText(text, sources)
       || String(text || '').trim()
       || 'The AI service returned an empty answer. Please try rephrasing the question.';
     const clientSources = sourcesToClient(sources);
-    if (cacheKey) answerCacheStore.put(cacheKey, { answer, sources: clientSources, model }, config.answerCacheMaxEntries);
+    // Truncated or reasoning-shaped output is shown but never cached: a bad
+    // answer served instantly on every repeat is worse than a slow good one.
+    if (cacheKey && isCacheableAnswer(answer, truncated)) answerCacheStore.put(cacheKey, { answer, sources: clientSources, model }, config.answerCacheMaxEntries);
     return {
       answer,
       model,
@@ -2421,11 +2502,11 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
     const finished = (async () => {
       try {
-        const { text, model } = await generateAnswer(prepared.prompt, pushToken);
+        const { text, model, truncated } = await generateAnswer(prepared.prompt, pushToken);
         const answer = cleanAnswerText(text, prepared.sources)
           || String(text || '').trim()
           || 'The AI service returned an empty answer. Please try rephrasing the question.';
-        return { answer, model };
+        return { answer, model, truncated };
       } catch (error) {
         return { error };
       }
@@ -2446,7 +2527,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       yield { error: classifyError(result.error) };
       return;
     }
-    if (cacheKey) answerCacheStore.put(cacheKey, { answer: result.answer, sources: prepared.sources, model: result.model }, config.answerCacheMaxEntries);
+    if (cacheKey && isCacheableAnswer(result.answer, result.truncated)) answerCacheStore.put(cacheKey, { answer: result.answer, sources: prepared.sources, model: result.model }, config.answerCacheMaxEntries);
     yield { answer: result.answer, model: result.model };
     yield STREAM_DONE;
   }
@@ -2643,5 +2724,6 @@ module.exports = {
   getConfig,
   createAnswerCacheStore,
   normalizeQuestionKey,
-  answerCacheKey
+  answerCacheKey,
+  isCacheableAnswer
 };
