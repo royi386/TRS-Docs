@@ -9,7 +9,9 @@ services:
       - "3000:3000"
 
     environment:
-      ADMIN_PASSWORD: 12345678
+      # Read from .env next to this file. Compose refuses to start without it,
+      # so the app can never come up with admin access silently disabled.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env (copy .env.example)}
       PORT: 3000
       DB_PATH: /app/data/smi_tc.db
       UPLOAD_DIR: /app/uploads
