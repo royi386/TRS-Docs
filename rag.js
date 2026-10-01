@@ -2021,7 +2021,9 @@ function createRag({ db, uploadDirectory, logger = console }) {
           error: message.slice(0, 500),
           embedding_model: ''
         });
-        invalidateCache();
+        // No invalidateCache here on purpose: an error record changes no
+        // stored passages, and files that fail on every scan (bad scans, say)
+        // would otherwise wipe the answer cache every few minutes.
         logger.error(`[rag] failed to index ${source}: ${message}`);
         results.push({ source, status: 'error', error: message });
 
