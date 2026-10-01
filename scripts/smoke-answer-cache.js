@@ -76,6 +76,13 @@ function startFakeOllama() {
           }
           return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' })}\n`);
         }
+        if (behaviour.mode === 'glued' && !nudge) {
+          // The failure seen in production: the monologue arrives as one
+          // blob with no spaces, invisible to word-boundary regexes. The
+          // nudged retry gets a clean answer, as a real model should.
+          res.write(`${JSON.stringify({ message: { role: 'assistant', content: ',letmetacklethisquestion.Theuserisasking' }, done: false })}\n`);
+          return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' })}\n`);
+        }
         if (behaviour.mode === 'truncated') {
           res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'DGA is dissolved gas analysis and the document says ' }, done: false })}\n`);
           return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'length' })}\n`);
@@ -212,6 +219,16 @@ async function main() {
   assert.strictEqual(isCacheableAnswer('First, I need to check the passages.', false), false, 'reasoning openers are not cacheable');
   assert.strictEqual(isCacheableAnswer('A fine answer.', true), false, 'truncated answers are not cacheable');
   assert.strictEqual(isCacheableAnswer('', false), false);
+
+  // 12b. A glued, space-less reasoning blob is still recognised.
+  const { looksLikeReasoningHead } = require('../rag');
+  assert.ok(looksLikeReasoningHead(',letmetacklethisquestion.Theuserisasking'), 'glued reasoning must be detected');
+  assert.ok(looksLikeReasoningHead('Okay, I need to check the passages'), 'tic + reasoning must be detected');
+  assert.ok(!looksLikeReasoningHead('DGA stands for dissolved gas analysis.'), 'a real answer must never look like reasoning');
+  rag.invalidateCache();
+  behaviour.mode = 'glued';
+  const glued = await rag.ask('DGA');
+  assert.strictEqual(glued.answer, 'Hello from the model.', 'the glued leak must be retried into a real answer');
 
   // 12. A bare term gets an explicit task line; a real question does not.
   rag.invalidateCache();

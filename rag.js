@@ -168,6 +168,42 @@ const REASONING_OPENER = /^\s*(?:let me\b|the user\b|i need to\b|i should\b|i'll
 // still hits the reasoning filter on what remains.
 const LEADING_TIC = /^\s*(?:okay+|alright|hm+|sure|well)\b[^\w\n]*\s*/i;
 
+// Reasoning phrases matched with every space and punctuation mark removed.
+// Small models sometimes emit their opening monologue as one glued blob
+// (",letmetacklethisquestion.Theuserisasking…"), which word-boundary regexes
+// can never see. Each phrase is chosen so no legitimate answer can start
+// with it even after normalisation.
+const REASONING_PREFIXES = [
+  'letme',
+  'theuser',
+  'ineedto',
+  'ishould',
+  'iwill',
+  'firsti',
+  'firstwe',
+  'firstlet',
+  'lookingatthe',
+  'lookingatpassages',
+  'lookingatcontext',
+  'toanswerthisquestion',
+  'toanswerthequestion',
+  'tacklethisquestion'
+];
+
+function normalizedAnswerHead(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function looksLikeReasoningHead(text) {
+  // A leading filler word says nothing about what follows; judge the rest.
+  const tic = String(text || '').match(LEADING_TIC);
+  const head = tic ? String(text).slice(tic[0].length) : String(text || '');
+  if (REASONING_OPENER.test(head)) return true;
+  const normalized = normalizedAnswerHead(head);
+  if (!normalized) return false;
+  return REASONING_PREFIXES.some(prefix => normalized.startsWith(prefix));
+}
+
 /**
  * Removes a thinking model's reasoning. Handles a well-formed <think>…</think>
  * pair, a lone closing tag (everything before it was reasoning), an opening tag
@@ -302,7 +338,7 @@ function isCacheableAnswer(answer, truncated = false) {
   const value = String(answer || '').trim();
   if (!value) return false;
   if (truncated) return false;
-  if (REASONING_OPENER.test(value)) return false;
+  if (looksLikeReasoningHead(value)) return false;
   return true;
 }
 
@@ -1204,7 +1240,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
     if (!headBuffer) return;
     const visible = headBuffer;
     headBuffer = '';
-    if (REASONING_OPENER.test(visible)) {
+    if (looksLikeReasoningHead(visible)) {
       thinking = true;
       suppressed += visible;
       return;
@@ -1234,7 +1270,7 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       const tic = headBuffer.match(LEADING_TIC);
       if (tic) headBuffer = headBuffer.slice(tic[0].length);
       if (!headBuffer) return;
-      if (REASONING_OPENER.test(headBuffer)) {
+      if (looksLikeReasoningHead(headBuffer)) {
         thinking = true;
         suppressed += headBuffer;
         headBuffer = '';
@@ -2804,5 +2840,6 @@ module.exports = {
   createAnswerCacheStore,
   normalizeQuestionKey,
   answerCacheKey,
-  isCacheableAnswer
+  isCacheableAnswer,
+  looksLikeReasoningHead
 };
