@@ -624,14 +624,41 @@
     return nearest || lazyPages[lazyPages.length - 1];
   }
   let pdfBadgeTimer = null;
+  let pdfScrollSettledTimer = null;
+  let pdfScrollRaf = null;
   function showPdfPageBadge() {
     const badge = document.getElementById('pdfPageBadge');
     if (!badge || !lazyPages.length || pdfViewer.classList.contains('hidden')) return;
     badge.textContent = `Page ${currentPdfPage().number} of ${lazyPages.length}`;
     badge.classList.add('pdf-page-badge-visible');
+    // Stay up for the whole scroll: only start the fade once scrolling has
+    // been quiet for a moment. Hiding on a fixed timer let the badge blink
+    // away mid-scroll on phones, where observer callbacks pause during
+    // touch momentum scrolling and nothing re-showed it.
     if (pdfBadgeTimer) window.clearTimeout(pdfBadgeTimer);
-    pdfBadgeTimer = window.setTimeout(() => badge.classList.remove('pdf-page-badge-visible'), 1400);
+    if (pdfScrollSettledTimer) window.clearTimeout(pdfScrollSettledTimer);
+    pdfScrollSettledTimer = window.setTimeout(() => {
+      if (pdfBadgeTimer) window.clearTimeout(pdfBadgeTimer);
+      pdfBadgeTimer = window.setTimeout(() => badge.classList.remove('pdf-page-badge-visible'), 1400);
+    }, 180);
   }
+  // Mobile browsers pause IntersectionObserver callbacks while a touch
+  // momentum scroll is running, which froze the page number until the scroll
+  // stopped (and never woke up at all on some devices). Scroll and resize
+  // events keep firing throughout, so they drive the same updates; rAF
+  // coalesces them to one cheap run per frame.
+  function schedulePdfViewportUpdate() {
+    if (pdfViewer.classList.contains('hidden') || pdfScrollRaf) return;
+    pdfScrollRaf = window.requestAnimationFrame(() => {
+      pdfScrollRaf = null;
+      if (pdfViewer.classList.contains('hidden')) return;
+      updatePdfPageIndicator();
+      showPdfPageBadge();
+      renderVisiblePdfPages();
+    });
+  }
+  window.addEventListener('scroll', schedulePdfViewportUpdate, { passive: true });
+  window.addEventListener('resize', schedulePdfViewportUpdate, { passive: true });
   function recycleFarPdfPages() {
     const rendered = lazyPages.filter(page => page.rendered);
     if (rendered.length <= PDF_MAX_CANVASES) return;
@@ -697,7 +724,8 @@
     if (!indicator || !jump || !lazyPages.length) return;
     const page = currentPdfPage();
     indicator.textContent = `Page ${page.number} of ${lazyPages.length}`;
-    jump.value = String(page.number);
+    // Leave the input alone while the user is typing a page number in it.
+    if (document.activeElement !== jump) jump.value = String(page.number);
     jump.max = String(lazyPages.length);
   }
   async function renderPdf(id) {
