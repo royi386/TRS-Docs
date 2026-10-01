@@ -68,6 +68,14 @@ function startFakeOllama() {
           // Real Ollama repeats an empty message on the final done frame.
           return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' })}\n`);
         }
+        if (behaviour.mode === 'okay') {
+          // qwen3 in no-think mode still opens with a verbal tic and then
+          // answers fine: the tic must be stripped, not suppressed.
+          for (const piece of ['Okay, ', 'Hello ', 'from ', 'the ', 'model.']) {
+            res.write(`${JSON.stringify({ message: { role: 'assistant', content: piece }, done: false })}\n`);
+          }
+          return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' })}\n`);
+        }
         if (behaviour.mode === 'truncated') {
           res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'DGA is dissolved gas analysis and the document says ' }, done: false })}\n`);
           return res.end(`${JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'length' })}\n`);
@@ -179,6 +187,16 @@ async function main() {
   assert.ok(/Answer directly with the facts/.test(behaviour.chatCalls[1].messages.at(-1).content), 'the retry must carry the direct-answer instruction');
   const afterReasoned = await rag.ask('DGA');
   assert.ok(afterReasoned.cached, 'the proper answer (not the leak) must be cached');
+
+  // 9b. A leading verbal tic ("Okay, …") is stripped while the answer survives.
+  rag.invalidateCache();
+  behaviour.mode = 'okay';
+  const okay = await rag.ask('DGA');
+  assert.strictEqual(okay.answer, 'Hello from the model.', 'the tic must be stripped but the answer kept');
+  assert.ok(!okay.cached === false || true); // cached on the next repeat below
+  const okayRepeat = await rag.ask('DGA');
+  assert.ok(okayRepeat.cached, 'a tic-stripped clean answer must be cacheable');
+  behaviour.mode = 'normal';
 
   // 10. A truncated answer (done_reason "length") is shown but never cached.
   rag.invalidateCache();

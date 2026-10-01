@@ -157,7 +157,16 @@ function standaloneQuestion(question, history) {
  * is reasoning, not the answer. Small models love the "First, I need to…"
  * and "Looking at the passages…" variants, so those are covered too.
  */
-const REASONING_OPENER = /^\s*(?:okay\b|alright\b|hmm+\b|let me\b|the user\b|i need to\b|i should\b|i'll\b|i will\b|first(?:ly)?\b[,:\s]*(?:i\b|we\b|let\b)|looking at (?:the )?(?:passages?|context)\b|to answer (?:this |the )?question\b)/i;
+// A response opening like this is the model's chain-of-thought, not the
+// answer. Pure verbal tics ("Okay,") are NOT here: they are stripped as a
+// prefix instead, because qwen3 in no-think mode still opens with them and
+// then answers perfectly well.
+const REASONING_OPENER = /^\s*(?:let me\b|the user\b|i need to\b|i should\b|i'll\b|i will\b|first(?:ly)?\b[,:\s]*(?:i\b|we\b|let\b)|looking at (?:the )?(?:passages?|context)\b|to answer (?:this |the )?question\b)/i;
+
+// A leading filler word followed by punctuation. Stripped before the opener
+// test so "Okay, DGA stands for…" keeps its answer while "Okay, I need to…"
+// still hits the reasoning filter on what remains.
+const LEADING_TIC = /^\s*(?:okay+|alright|hm+|sure|well)\b[^\w\n]*\s*/i;
 
 /**
  * Removes a thinking model's reasoning. Handles a well-formed <think>…</think>
@@ -1190,6 +1199,9 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
   // it unless it turns out to open like reasoning.
   const flushHead = () => {
     if (answerStarted || thinking || !headBuffer) return;
+    const tic = headBuffer.match(LEADING_TIC);
+    if (tic) headBuffer = headBuffer.slice(tic[0].length);
+    if (!headBuffer) return;
     const visible = headBuffer;
     headBuffer = '';
     if (REASONING_OPENER.test(visible)) {
@@ -1217,6 +1229,11 @@ async function streamOllamaChat(body, { ollamaBaseUrl: baseUrl }, onToken = null
       // the buffer matches an opener (reasoning — suppress everything) or is
       // long enough / has a newline (a real answer — release it).
       headBuffer += text;
+      // Strip a leading verbal tic once the head holds enough of it, then
+      // judge the remainder on its own.
+      const tic = headBuffer.match(LEADING_TIC);
+      if (tic) headBuffer = headBuffer.slice(tic[0].length);
+      if (!headBuffer) return;
       if (REASONING_OPENER.test(headBuffer)) {
         thinking = true;
         suppressed += headBuffer;
@@ -2373,6 +2390,22 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   /* ---------------- public API ---------------- */
 
+  /**
+   * Last resort when the model cannot produce a clean answer (persistent
+   * reasoning leaks, an exhausted answer budget): the retrieval already found
+   * the right documents, so naming them beats a dead error message.
+   */
+  function fallbackAnswer(sources) {
+    const names = (sources || []).slice(0, 3).map(source => {
+      const label = source.documentNumber || source.title || '';
+      return label ? `${label}${source.page ? `, page ${source.page}` : ''}` : '';
+    }).filter(Boolean);
+    const start = 'The assistant could not compose a clean answer for that just now.';
+    return names.length
+      ? `${start} These documents look relevant: ${names.join('; ')}. Open them directly, or ask a fuller question.`
+      : `${start} Try a fuller question.`;
+  }
+
   async function ask(question, { history = [] } = {}) {
     const config = getConfig();
     const trimmed = String(question || '').trim();
@@ -2413,7 +2446,20 @@ function createRag({ db, uploadDirectory, logger = console }) {
       };
     }
 
-    const { text, model, truncated } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config)));
+    let text, model, truncated;
+    try {
+      ({ text, model, truncated } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config))));
+    } catch (error) {
+      // Only generation misbehaviour degrades gracefully; configuration and
+      // network faults still surface as real errors the admin can act on.
+      if (!(error instanceof AiServiceError) || error.kind !== 'request') throw error;
+      logger.warn(`[rag] falling back to document suggestions: ${error.message}`);
+      return {
+        answer: fallbackAnswer(sources),
+        model: null,
+        sources: sourcesToClient(sources)
+      };
+    }
     const answer = cleanAnswerText(text, sources)
       || String(text || '').trim()
       || 'The AI service returned an empty answer. Please try rephrasing the question.';
@@ -2537,6 +2583,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
           || 'The AI service returned an empty answer. Please try rephrasing the question.';
         return { answer, model, truncated };
       } catch (error) {
+        if (error instanceof AiServiceError && error.kind === 'request') {
+          logger.warn(`[rag] falling back to document suggestions: ${error.message}`);
+          return { answer: fallbackAnswer(prepared.sources), model: null, fromFallback: true };
+        }
         return { error };
       }
     })();
@@ -2556,7 +2606,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       yield { error: classifyError(result.error) };
       return;
     }
-    if (cacheKey && isCacheableAnswer(result.answer, result.truncated)) answerCacheStore.put(cacheKey, { answer: result.answer, sources: prepared.sources, model: result.model }, config.answerCacheMaxEntries);
+    if (cacheKey && !result.fromFallback && isCacheableAnswer(result.answer, result.truncated)) answerCacheStore.put(cacheKey, { answer: result.answer, sources: prepared.sources, model: result.model }, config.answerCacheMaxEntries);
     yield { answer: result.answer, model: result.model };
     yield STREAM_DONE;
   }
