@@ -2165,6 +2165,22 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   const STREAM_DONE = { done: true, sources: null, model: null, error: null };
 
+  /**
+   * A bare term ("DGA", "VCB torque") gives the model nothing to do but
+   * guess what is being asked — and small models narrate that guess as their
+   * answer ("First, I need to figure out what the user wants…"). When the
+   * question carries no interrogative structure, an explicit task is added so
+   * the model can answer straight away instead of deliberating on paper.
+   */
+  function shortQueryTaskLine(question) {
+    const value = String(question || '').trim();
+    const words = value.split(/\s+/).filter(Boolean);
+    if (!words.length || words.length > 3) return '';
+    if (value.includes('?')) return '';
+    if (/^(what|who|whom|whose|which|why|how|when|where|explain|describe|define|list|summarize|summarise|compare|give|tell|show|state|mention|is|are|was|were|does|do|did|can|could|should|would|will)\b/i.test(value)) return '';
+    return '\n\nThe question is only a term. Explain what it stands for and summarize what the passages say about it.';
+  }
+
   function buildPrompt(question, sources, history = '') {
     const config = getConfig();
     const blocks = [];
@@ -2192,7 +2208,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       '',
       blocks.join('\n\n---\n\n'),
       '',
-      `Question: ${question}`
+      `Question: ${question}${shortQueryTaskLine(question)}`
     ].join('\n');
   }
 

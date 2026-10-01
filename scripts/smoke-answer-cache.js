@@ -195,6 +195,16 @@ async function main() {
   assert.strictEqual(isCacheableAnswer('A fine answer.', true), false, 'truncated answers are not cacheable');
   assert.strictEqual(isCacheableAnswer('', false), false);
 
+  // 12. A bare term gets an explicit task line; a real question does not.
+  rag.invalidateCache();
+  behaviour.mode = 'normal';
+  behaviour.chatCalls.length = 0;
+  await rag.ask('DGA');
+  assert.ok(/The question is only a term/.test(behaviour.chatCalls[0].messages.at(-1).content), 'bare terms must carry an explicit task line');
+  behaviour.chatCalls.length = 0;
+  await rag.ask('What is VCB?');
+  assert.ok(!/The question is only a term/.test(behaviour.chatCalls[0].messages.at(-1).content), 'real questions must not carry the task line');
+
   server.close();
   console.log('answer cache smoke test: all assertions passed');
 }
