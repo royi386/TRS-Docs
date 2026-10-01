@@ -25,14 +25,6 @@ fs.mkdirSync(feedbackUploadDirectory, { recursive: true });
 // Middleware
 app.use(cors());
 app.use(express.json());
-// The app shell (HTML and the service worker) must always be revalidated, so
-// devices pick up new versions immediately instead of showing a stale UI. The
-// rest (icons, fonts) can use the default heuristic caching.
-app.use(express.static('public', {
-  setHeaders(res, filePath) {
-    if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache');
-  }
-}));
 
 // Database setup
 const db = new Database(databasePath);
@@ -56,6 +48,9 @@ function pageNameFromPath(pathName) {
   return 'home';
 }
 
+// This middleware must sit BEFORE express.static: the static handler serves
+// the app shell for '/' and clean URLs, and anything it answers would never
+// reach a later logger — the home page would go uncounted.
 app.use((req, res, next) => {
   if (req.method === 'GET') {
     const page = pageNameFromPath(req.path || '');
@@ -63,6 +58,15 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// The app shell (HTML and the service worker) must always be revalidated, so
+// devices pick up new versions immediately instead of showing a stale UI. The
+// rest (icons, fonts) can use the default heuristic caching.
+app.use(express.static('public', {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
 
 // Create tables
 db.exec(`
