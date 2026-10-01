@@ -46,6 +46,12 @@ const CLOUD_LIMITS = { topK: 6, maxContextChars: 12000, answerMaxTokens: 2048, e
 // tessdata.projectnaptha.com and is cached in a local folder; point
 // RAG_OCR_LANG_PATH at a folder holding <lang>.traineddata.gz for fully
 // offline servers.
+// Admin-entered document metadata (caption, keywords, document number) is
+// folded into retrieval twice: once into every passage's embedding text, and
+// once as a separate FTS5 "metadata" store whose bm25 hits blend into the
+// fused score. Set RAG_METADATA_BOOST to 0 to score purely on page text.
+const DEFAULT_METADATA_BOOST = 0.6;
+
 const DEFAULT_OCR_LANGS = 'eng';
 const OCR_CACHE_DIR = path.join(__dirname, '.ocr-cache');
 const OCR_PAGE_TARGET_WIDTH = 1700;
@@ -70,7 +76,10 @@ const OCR_STAMP_PAGE_MAX_CHARS = 60;
 // Bump this when extraction changes, so documents indexed by the old code are
 // re-read. v2: OCR every page (scanner text layers are not trusted) and merge
 // the text layer with the OCR result per page.
-const EXTRACTION_REVISION = 'v2';
+// v3: every stored passage is now embedded with its document's caption and
+// keywords in front of the page text, so documents indexed by v2 must be read
+// and embedded again. Metadata edits re-embed only their own file.
+const EXTRACTION_REVISION = 'v3';
 
 const SYSTEM_INSTRUCTION = [
   'You are the Rail Docs assistant for an Indian Railways engineering document library.',
@@ -269,6 +278,72 @@ function keywordQueryFromQuestion(question) {
   return terms.map(term => `"${term}"`).join(' OR ');
 }
 
+/**
+ * The keyword half of retrieval answers questions such as "what does the
+ * appendix say about temperature rise?" with the passage's own words. Captions
+ * and keywords describe the same document with different wording, so a question
+ * should hit a document whose admin-typed metadata uses other words than the
+ * scanned pages do. Shared by the question side and the document side so both
+ * ends of the match are tokenised the same way. Bounded like the question side
+ * (12 terms) so a keyword field stuffed with hundreds of words cannot dilute a
+ * document's FTS rows into noise.
+ */
+function extractSearchTerms(value) {
+  const stopWords = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'is', 'are', 'was', 'were', 'be', 'been', 'and', 'or', 'what', 'which', 'who', 'whom', 'how', 'why', 'when', 'where', 'does', 'do', 'did', 'can', 'could', 'should', 'would', 'will', 'shall', 'may', 'might', 'must', 'give', 'tell', 'show', 'list', 'find', 'any', 'its', 'it', 'his', 'her', 'their', 'there', 'that', 'this', 'these', 'those', 'from', 'with', 'as', 'at', 'by', 'per', 'not', 'no', 'yes', 'about', 'into', 'over', 'under', 'please']);
+  const terms = [];
+  const seen = new Set();
+  for (const raw of String(value || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    const term = raw.trim();
+    if (!term || term.length < 2 || seen.has(term)) continue;
+    if (!/\d/.test(term) && stopWords.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
+    if (terms.length >= 12) break;
+  }
+  return terms;
+}
+
+/**
+ * One line per stored metadata field, so bm25's length normalisation weighs a
+ * rich caption fairly against a two-word one, and the embedding model sees the
+ * fields in a stable order. Returned for both uses: the FTS row and the
+ * embedding prefix.
+ */
+function documentMetadataLines({ title, documentNumber, keywords } = {}) {
+  return [
+    documentNumber ? `Document number: ${documentNumber}` : '',
+    title ? `Title: ${title}` : '',
+    keywords ? `Keywords: ${keywords}` : ''
+  ].filter(Boolean);
+}
+
+/**
+ * FTS text for a document's metadata: only the searchable terms of each field,
+ * one line per field. Storing tokenised terms (not raw text) keeps the FTS
+ * rows small and the bm25 lengths meaningful, and dropping thin words leaves
+ * nothing that could never match a query anyway.
+ */
+function buildMetadataFtsText(metadata) {
+  return documentMetadataLines(metadata)
+    .map(line => extractSearchTerms(line).join(' '))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * Embedding text for one passage: its document's caption, number and keywords
+ * come first, then the page's own words. An OCR page that scanned as noise now
+ * embeds next to its caption's clean wording instead of alone, and a caption
+ * written in different words than the page still pulls the document up for a
+ * question phrased the admin's way. The suffix anchors the vector in the page
+ * content; without it every passage of a document would carry a near-identical
+ * vector and retrieval could no longer pick the right page within a document.
+ */
+function buildChunkEmbedText(metadata, content) {
+  const lines = documentMetadataLines(metadata);
+  return lines.length ? `${lines.join('\n')}\n${content}` : String(content || '');
+}
+
 function readNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -320,6 +395,7 @@ function answerCacheKey(question, searchQuestion, config) {
     config.perDocumentLimit,
     config.keywordWeight,
     config.vectorWeight,
+    config.metadataBoost,
     config.ollamaTemperature,
     config.answerMaxTokens
   ].join('|');
@@ -543,6 +619,11 @@ function getConfig() {
     // sheet suggested for a "tm bellow" question). Keep only passages within
     // this ratio of the best score.
     scoreGapRatio: Number.isFinite(Number(process.env.RAG_SCORE_GAP_RATIO)) ? Math.min(Math.max(Number(process.env.RAG_SCORE_GAP_RATIO), 0), 1) : 0.55,
+    // How strongly admin-entered metadata (caption, keywords, document number)
+    // counts in the fused retrieval score, relative to a perfect keyword or
+    // vector match. 0 turns metadata scoring off; page text always contributes
+    // through the vector and keyword halves as before.
+    metadataBoost: Number.isFinite(Number(process.env.RAG_METADATA_BOOST)) ? Math.max(Number(process.env.RAG_METADATA_BOOST), 0) : DEFAULT_METADATA_BOOST,
     perDocumentLimit: Math.max(1, Math.min(readNumber(process.env.RAG_PER_DOC_LIMIT, 3), topK)),
     retrievePool: Math.max(topK, Math.min(readNumber(process.env.RAG_RETRIEVE_POOL, topK * 4), 40))
   };
@@ -1518,6 +1599,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       status TEXT NOT NULL DEFAULT 'pending',
       error TEXT NOT NULL DEFAULT '',
       embedding_model TEXT NOT NULL DEFAULT '',
+      keywords TEXT NOT NULL DEFAULT '',
       indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -1588,6 +1670,49 @@ function createRag({ db, uploadDirectory, logger = console }) {
   } catch (error) {
     if (!error.message.includes('duplicate column name')) throw error;
   }
+  // The admin-entered keywords, mirrored from the documents row so retrieval
+  // can score against them without joining the library table.
+  try {
+    db.exec("ALTER TABLE rag_documents ADD COLUMN keywords TEXT NOT NULL DEFAULT ''");
+  } catch (error) {
+    if (!error.message.includes('duplicate column name')) throw error;
+  }
+
+  // Admin-entered document metadata (caption, document number, keywords) gets
+  // its own keyword index. Page text answers "what does the page say"; this
+  // answers "what is the document called and what is it about" — the wording
+  // admins type, which pages often never contain.
+  // The stored row carries its own rag key, so hits join straight back to the
+  // document (FTS5 table rowids are meaningless to external tables). Both join
+  // columns are UNINDEXED: stored and returned by SELECT, but never tokenised
+  // into the match index. Virtual tables cannot be ALTERed, so the columns are
+  // declared here once.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS rag_documents_meta_fts USING fts5(
+      content,
+      rag_key UNINDEXED,
+      document_id UNINDEXED,
+      tokenize = 'porter unicode61'
+    );
+  `);
+  // An empty metadata index with indexed documents on disk (first boot after
+  // this change) is filled once from the stored columns.
+  try {
+    const docCount = db.prepare("SELECT COUNT(*) AS n FROM rag_documents WHERE status = 'indexed'").get().n;
+    const metaCount = db.prepare('SELECT COUNT(*) AS n FROM rag_documents_meta_fts').get().n;
+    if (docCount > 0 && metaCount === 0) {
+      const backfill = db.prepare('INSERT INTO rag_documents_meta_fts (content, rag_key, document_id) VALUES (?, ?, ?)');
+      db.transaction(() => {
+        for (const row of db.prepare("SELECT source, title, document_number, keywords, document_id FROM rag_documents WHERE status = 'indexed'").all()) {
+          const text = buildMetadataFtsText({ title: row.title, documentNumber: row.document_number, keywords: row.keywords });
+          if (text) backfill.run(text, row.source, row.document_id || null);
+        }
+      })();
+      logger.log('[rag] built the document metadata keyword index for the existing library');
+    }
+  } catch (error) {
+    if (!/no such table/i.test(error.message)) throw error;
+  }
 
   // Repeat-question answer cache. Memory is dropped on every index change
   // (see invalidateCache); table rows expire after RAG_ANSWER_CACHE_TTL_MS.
@@ -1605,7 +1730,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
 
   const statements = {
     getDocumentMeta: db.prepare(`
-      SELECT d.id, d.caption, d.document_number, d.document_type, d.original_name,
+      SELECT d.id, d.caption, d.document_number, d.document_type, d.keywords, d.original_name,
              COALESCE(dt.requires_login, 0) AS requires_login
       FROM documents d
       LEFT JOIN document_types dt ON dt.name = d.document_type
@@ -1620,8 +1745,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
       ORDER BY status <> 'indexed', ocr_pages > 0 DESC, source COLLATE NOCASE
     `),
     upsertDocument: db.prepare(`
-      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, indexed_at)
-      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages, CURRENT_TIMESTAMP)
+      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, keywords, indexed_at)
+      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages, @keywords, CURRENT_TIMESTAMP)
       ON CONFLICT(source) DO UPDATE SET
         document_id = excluded.document_id,
         title = excluded.title,
@@ -1636,13 +1761,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
         error = excluded.error,
         embedding_model = excluded.embedding_model,
         ocr_pages = excluded.ocr_pages,
+        keywords = excluded.keywords,
         indexed_at = CURRENT_TIMESTAMP
     `),
     // Only the columns a final file legitimately updates on rescan. final and
     // the stored chunks are untouched, so an admin's review survives.
     upsertDocumentKeepFinal: db.prepare(`
-      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, final, indexed_at)
-      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages,
+      INSERT INTO rag_documents (source, document_id, title, document_number, document_type, size, modified_ms, page_count, chunk_count, content_chars, status, error, embedding_model, ocr_pages, keywords, final, indexed_at)
+      VALUES (@source, @document_id, @title, @document_number, @document_type, @size, @modified_ms, @page_count, @chunk_count, @content_chars, @status, @error, @embedding_model, @ocr_pages, @keywords,
         COALESCE((SELECT final FROM rag_documents WHERE source = @source), 0), CURRENT_TIMESTAMP)
       ON CONFLICT(source) DO UPDATE SET
         document_id = excluded.document_id,
@@ -1658,6 +1784,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
         error = excluded.error,
         embedding_model = excluded.embedding_model,
         ocr_pages = excluded.ocr_pages,
+        keywords = excluded.keywords,
         indexed_at = CURRENT_TIMESTAMP
     `),
     setFinal: db.prepare('UPDATE rag_documents SET final = ? WHERE source = ?'),
@@ -1666,9 +1793,19 @@ function createRag({ db, uploadDirectory, logger = console }) {
     listChunks: db.prepare('SELECT id, page, chunk_index AS chunkIndex, content FROM rag_chunks WHERE source = ? ORDER BY page, chunk_index'),
     // Metadata edits (caption, document number) must reach the passage headers
     // even for final files, whose chunks are never re-read from the PDF.
-    updateCitation: db.prepare('UPDATE rag_documents SET document_id = ?, title = ?, document_number = ?, document_type = ? WHERE source = ?'),
+    updateCitation: db.prepare('UPDATE rag_documents SET document_id = ?, title = ?, document_number = ?, document_type = ?, keywords = ? WHERE source = ?'),
     deleteChunks: db.prepare('DELETE FROM rag_chunks WHERE source = ?'),
     deleteDocument: db.prepare('DELETE FROM rag_documents WHERE source = ?'),
+    searchMeta: db.prepare(`
+      SELECT rag_key, document_id, bm25(rag_documents_meta_fts) AS rank
+      FROM rag_documents_meta_fts
+      WHERE rag_documents_meta_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `),
+    getMetaRows: db.prepare('SELECT rag_key, document_id, content FROM rag_documents_meta_fts'),
+    insertMeta: db.prepare('INSERT INTO rag_documents_meta_fts (content, rag_key, document_id) VALUES (?, ?, ?)'),
+    deleteMeta: db.prepare('DELETE FROM rag_documents_meta_fts WHERE rag_key = ?'),
     insertChunk: db.prepare(`
       INSERT INTO rag_chunks (source, document_id, page, chunk_index, content, embedding, embedding_model, dimensions)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1712,7 +1849,73 @@ function createRag({ db, uploadDirectory, logger = console }) {
   function removeFile(source) {
     statements.deleteChunks.run(source);
     statements.deleteDocument.run(source);
+    statements.deleteMeta.run(source);
     invalidateCache();
+  }
+
+  /** Deletes a document's metadata FTS row, if it has one. */
+  function deleteMetadataFts(source) {
+    try {
+      statements.deleteMeta.run(source);
+    } catch (error) {
+      if (!/no such table/i.test(error.message)) throw error;
+    }
+  }
+
+  /**
+   * Rewrites one document's metadata keyword row from the library's current
+   * row. Called after every (re)index and after every metadata edit, so the
+   * retrieval side always mirrors what the admin typed. An empty result simply
+   * leaves no row — there is nothing in the fields worth matching.
+   */
+  function replaceMetadataFts(source, documentId = null) {
+    deleteMetadataFts(source);
+    try {
+      const metadata = documentMetadata(source);
+      if (!metadata) return;
+      const text = buildMetadataFtsText({
+        title: metadata.caption || '',
+        documentNumber: metadata.document_number || '',
+        keywords: metadata.keywords || ''
+      });
+      if (!text) return;
+      statements.insertMeta.run(text, source, metadata.id || documentId || null);
+    } catch (error) {
+      if (!/no such table/i.test(error.message)) throw error;
+    }
+  }
+
+  /**
+   * Applies a library metadata edit to the assistant index without re-reading
+   * or re-embedding the PDF: stored citation fields are refreshed (final files
+   * show the new caption in their passage headers too), the keyword row is
+   * rebuilt, and the vector cache is dropped. Returns true when an indexed
+   * record was updated, so the caller knows a full re-index is still worth
+   * kicking off (it catches restricted-type moves; here it is only belt and
+   * braces).
+   */
+  function updateDocumentMetadata(source) {
+    const metadata = documentMetadata(source);
+    if (!metadata) return false;
+    const indexed = statements.getIndexedDocument.get(source);
+    if (!indexed) return false;
+    if (statements.isFinal.get(source)) {
+      statements.updateCitation.run(
+        metadata.id,
+        metadata.caption || source,
+        metadata.document_number || '',
+        metadata.document_type || '',
+        metadata.keywords || '',
+        source
+      );
+      replaceMetadataFts(source, metadata.id);
+      invalidateCache();
+      logger.log(`[rag] ${source}: metadata updated on a final file (no re-embed needed)`);
+      return true;
+    }
+    replaceMetadataFts(source, metadata.id);
+    invalidateCache();
+    return true;
   }
 
   /* ---------------- admin chunk review ---------------- */
@@ -1753,23 +1956,32 @@ function createRag({ db, uploadDirectory, logger = console }) {
     const existing = statements.getIndexedDocument.get(source);
     const config = getConfig();
     const modelId = embeddingModelId(config);
-    const embeddings = cleaned.length ? await embedTexts(cleaned.map(chunk => chunk.content), 'RETRIEVAL_DOCUMENT') : [];
+    const docMeta = {
+      title: metadata?.caption || source,
+      documentNumber: metadata?.document_number || '',
+      keywords: metadata?.keywords || ''
+    };
+    const embeddings = cleaned.length
+      ? await embedTextsWithMetadata(cleaned.map(chunk => ({ content: chunk.content, metadata: docMeta })))
+      : [];
 
     const base = {
       source,
       document_id: metadata?.id || null,
-      title: metadata?.caption || source,
-      document_number: metadata?.document_number || '',
+      title: docMeta.title,
+      document_number: docMeta.documentNumber,
       document_type: metadata?.document_type || '',
       size: fileStat?.size || 0,
       modified_ms: fileStat ? Math.round(fileStat.mtimeMs) : 0,
       page_count: existing?.page_count || 0,
       content_chars: cleaned.reduce((total, chunk) => total + chunk.content.length, 0),
-      // saveChunks stores reviewed passages, not extracted ones; keep whatever
-      // extraction revision the record already carries so the revision check
-      // cannot re-extract a final file's PDF behind the admin's back.
-      embedding_model: existing?.embedding_model || `${modelId}|${EXTRACTION_REVISION}`,
-      ocr_pages: existing?.ocr_pages || 0
+      // These passages were just re-embedded under the current rules, so the
+      // record carries the current revision; the revision check can never
+      // re-extract a final file's PDF behind the admin's back anyway (final
+      // files leave indexFile before that check runs).
+      embedding_model: `${modelId}|${EXTRACTION_REVISION}`,
+      ocr_pages: existing?.ocr_pages || 0,
+      keywords: docMeta.keywords
     };
 
     db.transaction(() => {
@@ -1795,6 +2007,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       });
       if (final !== null) statements.setFinal.run(final ? 1 : 0, source);
     })();
+    replaceMetadataFts(source, base.document_id);
     invalidateCache();
     logger.log(`[rag] ${source}: admin saved ${cleaned.length} passage(s)${final === null ? '' : final ? ', marked final' : ', unmarked final'}`);
     return getFileState(source);
@@ -1831,7 +2044,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
       // Metadata edits still need to reach the citations (the document number
       // and caption shown in passage headers), so refresh those fields only.
       if (metadata) {
-        statements.updateCitation.run(metadata.id, metadata.caption || source, metadata.document_number || '', metadata.document_type || '', source);
+        statements.updateCitation.run(metadata.id, metadata.caption || source, metadata.document_number || '', metadata.document_type || '', metadata.keywords || '', source);
+        replaceMetadataFts(source, metadata.id);
       }
       return { source, status: 'final-unchanged' };
     }
@@ -1854,8 +2068,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
         status: 'restricted',
         error: 'Skipped: this document type requires a login',
         embedding_model: '',
-        ocr_pages: 0
+        ocr_pages: 0,
+        keywords: metadata.keywords || ''
       });
+      statements.deleteMeta.run(source);
       invalidateCache();
       return { source, status: 'restricted' };
     }
@@ -1929,7 +2145,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
       page_count: pageCount,
       content_chars: totalChars,
       embedding_model: `${modelId}|${EXTRACTION_REVISION}`,
-      ocr_pages: ocrPages
+      ocr_pages: ocrPages,
+      keywords: metadata?.keywords || ''
     };
 
     if (!chunks.length) {
@@ -1938,12 +2155,14 @@ function createRag({ db, uploadDirectory, logger = console }) {
         ? `Scanned PDF, and OCR could not read it: ${ocrError}`
         : 'No readable text found, even after OCR. The scan quality is probably too low.';
       statements.upsertDocument.run({ ...base, chunk_count: 0, status: 'no-text', error: reason });
+      replaceMetadataFts(source, base.document_id);
       invalidateCache();
       logger.warn(`[rag] ${source}: no extractable text (scanned PDF?)`);
       return { source, status: 'no-text' };
     }
 
-    const embeddings = await embedTexts(chunks.map(chunk => chunk.content), 'RETRIEVAL_DOCUMENT');
+    const docMeta = { title: base.title, documentNumber: base.document_number, keywords: base.keywords };
+    const embeddings = await embedTextsWithMetadata(chunks.map(chunk => ({ content: chunk.content, metadata: docMeta })));
 
     db.transaction(() => {
       statements.deleteChunks.run(source);
@@ -1962,6 +2181,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
       });
       statements.upsertDocument.run({ ...base, chunk_count: chunks.length, status: 'indexed', error: '' });
     })();
+    replaceMetadataFts(source, base.document_id);
     invalidateCache();
 
     logger.log(`[rag] indexed ${source} (${chunks.length} chunks, ${chunks.length} embeddings, ${reason})`);
@@ -2019,7 +2239,8 @@ function createRag({ db, uploadDirectory, logger = console }) {
           content_chars: 0,
           status: 'error',
           error: message.slice(0, 500),
-          embedding_model: ''
+          embedding_model: '',
+          keywords: metadata?.keywords || ''
         });
         // No invalidateCache here on purpose: an error record changes no
         // stored passages, and files that fail on every scan (bad scans, say)
@@ -2113,6 +2334,18 @@ function createRag({ db, uploadDirectory, logger = console }) {
     return vectors;
   }
 
+  /**
+   * Embeds passages with their document's admin-entered metadata (caption,
+   * document number, keywords) in front of each passage's own text. Every
+   * stored vector therefore points at both: what the page says and what the
+   * library calls the document — which is exactly how admins and questions
+   * refer to documents.
+   */
+  async function embedTextsWithMetadata(pieces) {
+    const texts = pieces.map(piece => buildChunkEmbedText(piece.metadata, piece.content));
+    return embedTexts(texts, 'RETRIEVAL_DOCUMENT');
+  }
+
   /* ---------------- retrieval ---------------- */
 
   function loadVectorCache() {
@@ -2159,11 +2392,39 @@ function createRag({ db, uploadDirectory, logger = console }) {
       }
     }
 
-    // Fuse: weighted sum of the two normalised signals. A passage strong in
-    // both (the real answer) beats a passage that merely sounds similar.
+    // Metadata pass: the same question against the library's own captions,
+    // keywords and document numbers. A question phrased the way the admin
+    // describes a document lifts every passage of that document, even when the
+    // scanned pages never use those words — the whole point of the caption and
+    // keywords fields. Normalised like the page-keyword pass, then added at a
+    // smaller weight so metadata refines the ranking but never overrules the
+    // passages themselves.
+    const metaScores = new Map();
+    if (keywordQuery && config.metadataBoost > 0) {
+      try {
+        const rows = statements.searchMeta.all(keywordQuery, config.retrievePool);
+        const best = rows.length ? rows[0].rank : 0;
+        for (const row of rows) {
+          const score = best < 0 ? Math.min(1, row.rank / best) : 1;
+          if (row.rag_key) metaScores.set(row.rag_key, Math.max(metaScores.get(row.rag_key) || 0, score));
+          if (row.document_id) metaScores.set(`id:${row.document_id}`, Math.max(metaScores.get(`id:${row.document_id}`) || 0, score));
+        }
+      } catch (error) {
+        logger.warn(`[rag] metadata search skipped: ${error.message}`);
+      }
+    }
+
+    // Fuse: weighted sum of the normalised signals. A passage strong in both
+    // (the real answer) beats a passage that merely sounds similar.
     const fused = new Map();
     for (const [id, score] of vectorScores) fused.set(id, score * config.vectorWeight);
     for (const [id, score] of keywordScores) fused.set(id, (fused.get(id) || 0) + score * config.keywordWeight);
+    for (const entry of entries) {
+      const bySource = metaScores.get(entry.source);
+      const byId = entry.documentId ? metaScores.get(`id:${entry.documentId}`) : 0;
+      const metaScore = Math.max(bySource || 0, byId || 0);
+      if (metaScore > 0) fused.set(entry.id, (fused.get(entry.id) || 0) + metaScore * config.metadataBoost);
+    }
 
     const scored = [...fused.entries()]
       .map(([id, score]) => {
@@ -2215,6 +2476,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
           documentId: metadata?.id || row.document_id || null,
           documentNumber: metadata?.document_number || '',
           documentType: metadata?.document_type || '',
+          keywords: metadata?.keywords || '',
           originalName: metadata?.original_name || row.source,
           title: metadata?.caption || row.source
         };
@@ -2248,12 +2510,18 @@ function createRag({ db, uploadDirectory, logger = console }) {
     return '\n\nThe question is only a term. Explain what it stands for and summarize what the passages say about it.';
   }
 
-  function buildPrompt(question, sources, history = '') {
+  function buildPrompt(question, sources, history = '', docMeta = null) {
     const config = getConfig();
     const blocks = [];
     let used = 0;
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index];
+      // The document's own keywords join the header: they tell the model what
+      // topics this document covers, wording the scanned pages themselves may
+      // never use (an OCR scan can garble exactly the terms a question uses).
+      const keywords = docMeta && docMeta.keywords
+        ? `Keywords: ${docMeta.keywords}`
+        : '';
       const heading = [
         `Passage ${index + 1},`,
         source.documentNumber ? `document number: ${source.documentNumber}` : '',
@@ -2262,6 +2530,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
         // the only identification available (no number, no caption).
         !source.documentNumber && !(source.title && source.title !== source.source) ? `File: ${source.source}` : '',
         source.title && source.title !== source.source ? `Caption: ${source.title}` : '',
+        keywords,
         source.page ? `Page: ${source.page}` : ''
       ].filter(Boolean).join(' | ');
       const block = `${heading}\n${source.content}`;
@@ -2490,9 +2759,10 @@ function createRag({ db, uploadDirectory, logger = console }) {
       };
     }
 
+    const docMeta = metadataFromSources(sources);
     let text, model, truncated;
     try {
-      ({ text, model, truncated } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config))));
+      ({ text, model, truncated } = await generateAnswer(buildPrompt(trimmed, sources, historyBlock(history, config), docMeta)));
     } catch (error) {
       // Only generation misbehaviour degrades gracefully; configuration and
       // network faults still surface as real errors the admin can act on.
@@ -2516,6 +2786,24 @@ function createRag({ db, uploadDirectory, logger = console }) {
       model,
       sources: clientSources
     };
+  }
+
+  /**
+   * The source documents carry the admin's keywords; the model is shown a
+   * `Keywords:` note in each passage header. An OCR page may garble exactly the
+   * terms a question uses, so telling the model what the document is *about*
+   * (in the admin's own words) makes the answer use the right vocabulary. The
+   * answer text itself still comes only from the passages.
+   */
+  function metadataFromSources(sources = []) {
+    const keywords = new Set();
+    for (const source of sources) {
+      for (const keyword of String(source.keywords || '').split(',')) {
+        const value = keyword.trim();
+        if (value) keywords.add(value);
+      }
+    }
+    return { keywords: [...keywords].join(', ') };
   }
 
   /** The client only needs the fields the UI shows, not the raw chunk text. */
@@ -2598,7 +2886,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
         }
         return {
           sources: sourcesToClient(sources),
-          prompt: buildPrompt(trimmed, sources, historyBlock(history, config))
+          prompt: buildPrompt(trimmed, sources, historyBlock(history, config), metadataFromSources(sources))
         };
       } catch (error) {
         return { error };
@@ -2805,6 +3093,7 @@ function createRag({ db, uploadDirectory, logger = console }) {
     // record (or a changed one) is picked up without it, and restricted types
     // are re-checked before the skip logic runs.
     indexFile: (source, options = {}) => indexFile(source, { force: false, reason: 'upload', ...options }),
+    updateDocumentMetadata,
     removeFile,
     getFileState,
     saveChunks,
@@ -2833,6 +3122,7 @@ module.exports = {
   ocrPdfPages,
   ocrMissingTextPages,
   isStampOnlyPageText,
+  isReadableText,
   mergeLayerAndOcr,
   buildChunks,
   chunkPageText,
@@ -2843,6 +3133,10 @@ module.exports = {
   stripThinking,
   streamOllamaChat,
   keywordQueryFromQuestion,
+  extractSearchTerms,
+  documentMetadataLines,
+  buildMetadataFtsText,
+  buildChunkEmbedText,
   AiServiceError,
   getConfig,
   createAnswerCacheStore,

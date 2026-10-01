@@ -48,6 +48,7 @@ Until a key is set the button still appears but reports that the assistant is sw
 * Uploading a document through the Admin page indexes it immediately.
 * A background scan every 5 minutes picks up PDFs copied straight into `uploads`, and removes ones that were deleted.
 * Editing a document's type re-checks it, so moving a document into a login-required type takes it out of the index again. The assistant only ever answers from **public** document types, never from `Drawings`.
+* The admin-entered **caption and keywords are part of retrieval**, not just labels: every stored passage is embedded with its document's caption, number and keywords in front of the page text, and a small keyword index over those fields lifts documents a question describes in the admin's own words — wording a poor scan often never contains. Editing a caption or keywords takes effect on the very next question without re-reading the PDF (library documents indexed before this change are re-read once automatically).
 * PDFs with a scanner text layer (CamScanner and friends stamp every page with a watermark) are OCR'd too: pages whose layer is only a stamp are treated as scanned, and by default every page is rasterised and read with OCR, then merged with the text layer. Set `RAG_OCR_ALL=0` to OCR only pages with no layer at all, and `RAG_OCR_MERGE_LAYER=0` to keep OCR and text-layer pages separate.
 
 Useful overrides (set them alongside `GEMINI_API_KEY`):
@@ -59,6 +60,7 @@ Useful overrides (set them alongside `GEMINI_API_KEY`):
 | `RAG_TOP_K` | `6` | Passages given to the model per question. |
 | `RAG_RESCAN_INTERVAL_MS` | `300000` | How often `uploads` is rescanned. |
 | `RAG_MIN_SCORE` | `0.3` | Similarity needed before a passage counts as a match. |
+| `RAG_METADATA_BOOST` | `0.6` | How strongly the caption / document number / keywords fields count when scoring passages (`0` scores on page text alone). |
 | `RAG_ANSWER_CACHE_TTL_MS` | `86400000` | Repeat questions are answered from a local cache for this long (`0` turns the cache off). Cleared automatically whenever documents are re-indexed, edited or deleted. |
 | `RAG_ANSWER_CACHE_MAX_ENTRIES` | `500` | Maximum number of cached answers, least recently used discarded first. |
 | `RAG_OCR_ALL` | `1` | OCR every page, not only pages with no text layer — scanner text layers often hold just a watermark ("Scanned by CamScanner"). `0` restores the old behaviour. |

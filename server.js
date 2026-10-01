@@ -959,7 +959,10 @@ app.post('/api/upload', requireAdmin, upload.single('pdf'), (req, res) => {
     );
 
     // The assistant picks this up right away instead of waiting for the next scan.
+    // The insert above has already landed, so the index's metadata mirror (caption
+    // and keywords) is current from the moment the row exists.
     if (rag.isEnabled()) {
+      rag.updateDocumentMetadata(req.file.filename);
       activeIndexSource = req.file.filename;
       rag.indexFile(req.file.filename)
         .then(result => console.log(`Indexed ${req.file.originalname}: ${result.status}`))
@@ -1088,8 +1091,13 @@ app.patch('/api/documents/:id', requireAdmin, (req, res) => {
     WHERE id = ?
   `).run(documentType, documentNumber, caption, keywords, req.params.id);
   // Editing metadata can move a document in or out of the restricted types,
-  // and the assistant index has to follow.
+  // and the assistant index has to follow. The caption and keywords the admin
+  // just typed take effect on the very next question without waiting for the
+  // PDF to be re-read and re-embedded; a full re-index is still queued in the
+  // background, mainly to catch a move into or out of a restricted type.
   if (rag.isEnabled()) {
+    const metadataApplied = rag.updateDocumentMetadata(existing.filename);
+    if (metadataApplied) console.log(`Metadata updated for ${existing.filename}; assistant index follows on the next question`);
     rag.indexFile(existing.filename).catch(error => console.error('Re-indexing edited document failed:', error.message));
   }
   res.json({ success: true });
